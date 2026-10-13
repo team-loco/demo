@@ -212,8 +212,8 @@ def prepare():
     CACHE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
     checkout("team-loco/loco", VERSIONS["loco"]["cli"], VERSIONS["loco"]["commit"], CORE)
-    bindir = CACHE / "bin"
-    bindir.mkdir(exist_ok=True)
+    bindir = CACHE / "bin" / VERSIONS["loco"]["cli"]
+    bindir.mkdir(parents=True, exist_ok=True)
     arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine())
     if arch is None:
         raise RuntimeError(f"Unsupported architecture: {platform.machine()}")
@@ -258,7 +258,7 @@ def prepare():
 
 def native_cli():
     arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
-    return CACHE / "bin" / f"loco-{platform.system().lower()}-{arch}"
+    return CACHE / "bin" / VERSIONS["loco"]["cli"] / f"loco-{platform.system().lower()}-{arch}"
 
 
 def cli(*args, **kwargs):
@@ -269,7 +269,7 @@ def cli(*args, **kwargs):
         "--mount", f"type=bind,source={STATE / 'cli'},target=/root/.loco",
         "--workdir", "/demo", "--env", "LOCO_CREDENTIAL_STORE=file",
         "--env", "LOCO_HOST=http://loco-demo-api:8000",
-        "--entrypoint", f"/demo/.cache/bin/loco-linux-{arch}",
+        "--entrypoint", f"/demo/.cache/bin/{VERSIONS['loco']['cli']}/loco-linux-{arch}",
         VERSIONS["infrastructureImages"]["postgres"], *args,
     ], **kwargs)
 

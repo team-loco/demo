@@ -67,7 +67,7 @@ The CLI supports prebuilt deployments through `image:` in `loco.yaml`; `deploy -
 
 ## Pins and blockers
 
-`versions.json` pins CLI v0.0.102 with binary checksums, its source commit and platform image digests, Astronomy Shop 3.1.0, upstream chart 0.42.3 with its archive checksum, and supporting images. Loco charts come from the exact CLI release commit and their Helm dependency lockfiles; this is a release source pin, not a separately published chart version. `mise.toml`, `mise.lock`, and `uv.lock` pin tools and Python dependencies.
+`versions.json` pins CLI v0.0.103 with binary checksums, its source commit and platform image digests, Astronomy Shop 3.1.0, upstream chart 0.42.3 with its archive checksum, and supporting images. Loco charts come from the exact CLI release commit and their Helm dependency lockfiles; this is a release source pin, not a separately published chart version. `mise.toml`, `mise.lock`, and `uv.lock` pin tools and Python dependencies.
 
 Current release gaps:
 
