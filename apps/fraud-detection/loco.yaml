@@ -1,0 +1,24 @@
+version: 1
+partial: fraud-detection
+services:
+  fraud-detection:
+    port: 8080
+    env:
+      FLAGD_HOST: flagd
+      FLAGD_PORT: '8013'
+      KAFKA_ADDR: kafka:9092
+      KAFKA_TOPIC: orders
+      OTEL_EXPERIMENTAL_SDK_TELEMETRY_VERSION: latest
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      OTEL_INSTRUMENTATION_KAFKA_EXPERIMENTAL_SPAN_ATTRIBUTES: 'true'
+      OTEL_INSTRUMENTATION_MESSAGING_EXPERIMENTAL_RECEIVE_TELEMETRY_ENABLED: 'true'
+      OTEL_TRACES_SAMPLER: always_on
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    image: ghcr.io/open-telemetry/demo:3.1.0-fraud-detection@sha256:a07ee694304b23e3e4e1ca9bdaa7a02e3eb30d1805d87dfe95e7ea31cd3aa703

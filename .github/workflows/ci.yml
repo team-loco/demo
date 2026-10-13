@@ -1,0 +1,60 @@
+name: demo e2e
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: demo-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
+        with:
+          version: 2026.10.6
+      - run: mise run setup
+      - run: mise run test
+      - run: mise run validate
+      - run: mise run lint
+  e2e:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
+        with:
+          version: 2026.10.6
+      - run: mise run setup
+      - run: mise run e2e -- --keep
+      - name: Report failures to Loco
+        if: failure() && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.LOCO_ISSUES_TOKEN }}
+        run: |
+          if [ -n "$GH_TOKEN" ] && [ -f artifacts/results.json ]; then
+            mise run report
+          else
+            echo '::warning::Issue reporting requires LOCO_ISSUES_TOKEN with Issues write access to team-loco/loco; see artifacts for failures.'
+          fi
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: demo-e2e-evidence
+          path: artifacts/
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Clean up
+        if: always()
+        run: mise run down

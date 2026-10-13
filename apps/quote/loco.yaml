@@ -1,0 +1,22 @@
+version: 1
+partial: quote
+services:
+  quote:
+    port: 8090
+    env:
+      IPV6_ENABLED: 'false'
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      OTEL_PHP_AUTOLOAD_ENABLED: 'true'
+      OTEL_PHP_INTERNAL_METRICS_ENABLED: 'true'
+      QUOTE_PORT: '8090'
+      OTEL_TRACES_SAMPLER: always_on
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    context: source
+    dockerfile: src/quote/Dockerfile

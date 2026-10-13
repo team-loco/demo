@@ -1,0 +1,23 @@
+version: 1
+partial: ad
+services:
+  ad:
+    port: 9555
+    env:
+      AD_PORT: '9555'
+      AD_PROMETHEUS_PORT: '9465'
+      FLAGD_HOST: flagd
+      FLAGD_PORT: '8013'
+      OTEL_EXPERIMENTAL_SDK_TELEMETRY_VERSION: latest
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_TRACES_SAMPLER: always_on
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    image: ghcr.io/open-telemetry/demo:3.1.0-ad@sha256:dfd7a4697116d7f961f2c6e8be1bd187f2af7555d6d4138c016097921d7c7ed0

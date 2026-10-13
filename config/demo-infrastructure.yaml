@@ -1,0 +1,119 @@
+default:
+  envOverrides:
+  - name: OTEL_COLLECTOR_NAME
+    value: otel-col-deploy.observability.svc.cluster.local
+components:
+  accounting:
+    enabled: false
+  ad:
+    enabled: false
+  agent:
+    enabled: false
+  cart:
+    enabled: false
+  chatbot:
+    enabled: false
+  checkout:
+    enabled: false
+  currency:
+    enabled: false
+  email:
+    enabled: false
+  fraud-detection:
+    enabled: false
+  frontend:
+    enabled: false
+  frontend-proxy:
+    enabled: false
+  image-provider:
+    enabled: false
+  load-generator:
+    enabled: false
+  mcp:
+    enabled: false
+  payment:
+    enabled: false
+  product-catalog:
+    enabled: false
+  quote:
+    enabled: false
+  recommendation:
+    enabled: false
+  shipping:
+    enabled: false
+  flagd:
+    enabled: true
+    imageOverride:
+      repository: ghcr.io/open-feature/flagd
+      tag: v0.16.0@sha256:32234e63c1d0634883aabd31cbd46802934aaaef0153dfd653b5d1017940bb4e
+    initContainers:
+    - name: init-config
+      image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
+      command:
+      - sh
+      - -c
+      - cp /config-ro/demo.flagd.json /config-rw/demo.flagd.json && cat /config-rw/demo.flagd.json
+      volumeMounts:
+      - mountPath: /config-ro
+        name: config-ro
+      - mountPath: /config-rw
+        name: config-rw
+    sidecarContainers:
+    - name: flagd-ui
+      useDefault:
+        env: true
+      service:
+        port: 4000
+      env:
+      - name: OTEL_EXPORTER_OTLP_ENDPOINT
+        value: http://$(OTEL_COLLECTOR_NAME):4318
+      - name: FLAGD_UI_PORT
+        value: '4000'
+      - name: SECRET_KEY_BASE
+        value: yYrECL4qbNwleYInGJYvVnSkwJuSQJ4ijPTx5tirGUXrbznFIBFVJdPl5t6O9ASw
+      - name: PHX_HOST
+        value: localhost
+      - name: OTEL_RESOURCE_ATTRIBUTES_EXTRA
+        value: service.criticality=low
+      resources:
+        limits:
+          memory: 250Mi
+      volumeMounts:
+      - name: config-rw
+        mountPath: /app/data
+      imageOverride:
+        repository: ghcr.io/open-telemetry/demo
+        tag: 3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062
+  kafka:
+    enabled: true
+    imageOverride:
+      repository: ghcr.io/open-telemetry/demo
+      tag: 3.1.0-kafka@sha256:4402ba7fd54470782a445f07c67e1d3f44d88ac8c5c0abf5d8298190a3f7a6ee
+  astronomy-db:
+    enabled: true
+    imageOverride:
+      repository: postgres
+      tag: 18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
+  valkey-cart:
+    enabled: true
+    imageOverride:
+      repository: ghcr.io/valkey-io/valkey
+      tag: 9.0.4-alpine3.23@sha256:107b203169a20ef7c87548c157f4e4a833dbbbd20fefd3a26740b7f98ac80216
+  telemetry-docs:
+    enabled: false
+  opamp-server:
+    enabled: false
+  firepit:
+    enabled: false
+opentelemetry-collector:
+  enabled: false
+otel-ebpf-profiler:
+  enabled: false
+jaeger:
+  enabled: false
+prometheus:
+  enabled: false
+grafana:
+  enabled: false
+opensearch:
+  enabled: false

@@ -1,0 +1,19 @@
+registry:
+  pullSecretName: loco-demo-pull
+builds:
+  pushSecretName: loco-demo-push
+  insecureRegistry: true
+  timeout: 30m
+  nodeSelector:
+    loco.build/demo-builder: "true"
+  storage:
+    workspace: 4Gi
+    out: 10Gi
+  resources:
+    build:
+      requests:
+        cpu: 500m
+        memory: 512Mi
+      limits:
+        cpu: "2"
+        memory: 4Gi

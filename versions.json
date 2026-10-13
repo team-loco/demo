@@ -1,0 +1,50 @@
+{
+  "loco": {
+    "cli": "v0.0.102",
+    "commit": "bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6",
+    "chartSource": "release-tag",
+    "images": {
+      "api": "ghcr.io/team-loco/loco-api:sha-bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6@sha256:1f26fa5cdeef6f0516aff22459bed774d1f3e405b73b4b63b7c89ea613939e0a",
+      "agent": "ghcr.io/team-loco/loco-agent:sha-bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6@sha256:fe4585214a63294a9837a66437d4a96dee5b3001c76061348af13781a32a961d",
+      "controller": "ghcr.io/team-loco/loco-controller:sha-bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6@sha256:68461c1b888e7a2062ab37239ea906df330c6dcee3e9e798ef09e5039c669798",
+      "builder": "ghcr.io/team-loco/loco-builder:sha-bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6@sha256:1cbbf9c8e42d9eff11a98bf58dd5ec59989748628ec35715698b33fe0cdb9990",
+      "obs-proxy": "ghcr.io/team-loco/loco-obs-proxy:sha-bc6e6e10aa6570bf9cfa8de31b77eb6f42ca8ca6@sha256:d8fb39e5096d5a2ee6cc5e4865205542f89befc0aed6d4335cbcb7aa4b9e0cd6"
+    },
+    "cliChecksums": {
+      "loco-darwin-amd64": "b92dabe9ccd56256a362465627fe8b18d4d40ba28a987eceefe54b445f430c9a",
+      "loco-darwin-arm64": "6b11ceb33ed84d5da524c57e2bac7dbdb1ca6f6afb1b30ad3bcd71dd0b996778",
+      "loco-linux-amd64": "7a23dcf54e8711af38b92c5b391081dfe089499524d619fcbe0f22b993d588d2",
+      "loco-linux-arm64": "b6153962c5b3297c6baa16339cac27d1c56a8f880baffe698e5e7f53b5b42018"
+    }
+  },
+  "upstream": {
+    "release": "3.1.0",
+    "commit": "dedc0178918e260823323b8d95005a8cb924b007",
+    "chart": "0.42.3",
+    "chartSha256": "3c16f3549ea86a85145d7b8db507fe171417d95ebbaf52a9d7f1b668d694ad62",
+    "chartUrl": "https://github.com/open-telemetry/opentelemetry-helm-charts/releases/download/opentelemetry-demo-0.42.3/opentelemetry-demo-0.42.3.tgz"
+  },
+  "kindImage": "kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5",
+  "certManagerChart": "v1.21.2",
+  "infrastructureImages": {
+    "postgres": "postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873",
+    "registry": "ghcr.io/project-zot/zot:v2.1.22@sha256:96cda11459ce6f8c60da3b03f03e9f67fd11b3ae2d82c4c04c92b3c608996080",
+    "s3": "versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499",
+    "flagd": "ghcr.io/open-feature/flagd:v0.16.0@sha256:32234e63c1d0634883aabd31cbd46802934aaaef0153dfd653b5d1017940bb4e",
+    "kafka": "ghcr.io/open-telemetry/demo:3.1.0-kafka@sha256:4402ba7fd54470782a445f07c67e1d3f44d88ac8c5c0abf5d8298190a3f7a6ee",
+    "valkey-cart": "ghcr.io/valkey-io/valkey:9.0.4-alpine3.23@sha256:107b203169a20ef7c87548c157f4e4a833dbbbd20fefd3a26740b7f98ac80216",
+    "astronomy-db": "postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636",
+    "busybox": "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+    "flagd-ui": "ghcr.io/open-telemetry/demo:3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062"
+  },
+  "apps": {
+    "ad": "ghcr.io/open-telemetry/demo:3.1.0-ad@sha256:dfd7a4697116d7f961f2c6e8be1bd187f2af7555d6d4138c016097921d7c7ed0",
+    "currency": "ghcr.io/open-telemetry/demo:3.1.0-currency@sha256:ba65e72d5841f909e0ee09498572092923f59e249ae4bf084ab63a82b33811c1",
+    "email": "ghcr.io/open-telemetry/demo:3.1.0-email@sha256:bd7754c1e0986f892b86ed6ab9067a372640d342ff8eee2074bedb61c649ce71",
+    "fraud-detection": "ghcr.io/open-telemetry/demo:3.1.0-fraud-detection@sha256:a07ee694304b23e3e4e1ca9bdaa7a02e3eb30d1805d87dfe95e7ea31cd3aa703",
+    "frontend": "ghcr.io/open-telemetry/demo:3.1.0-frontend@sha256:28358db4620686eda30dfabfc770b9ff0db73819ebac0895064271b446110289",
+    "frontend-proxy": "ghcr.io/open-telemetry/demo:3.1.0-frontend-proxy@sha256:fd4da88bfeaadd9437a4ee00f708e129a9eedb9c48874cea8e94b034983280a1",
+    "image-provider": "ghcr.io/open-telemetry/demo:3.1.0-image-provider@sha256:46d1a7e95109c0064122ca0bfb49cd05191fb90a6264b6be508e0d98f2c963f1",
+    "load-generator": "ghcr.io/open-telemetry/demo:3.1.0-load-generator@sha256:b130d6cee6cb36a2799787a553168811e3ccc5408fe5dad0bc4b4d8302c7a63c"
+  }
+}

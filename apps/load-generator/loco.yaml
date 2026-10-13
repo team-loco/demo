@@ -1,0 +1,39 @@
+version: 1
+partial: load-generator
+services:
+  load-generator:
+    port: 8089
+    env:
+      FLAGD_HOST: flagd
+      FLAGD_OFREP_PORT: '8016'
+      FLAGD_PORT: '8013'
+      LOCUST_AUTOSTART: 'true'
+      LOCUST_BROWSER_TRAFFIC_ENABLED: 'false'
+      LOCUST_BROWSER_USER_WEIGHT: '1'
+      LOCUST_HEADLESS: 'false'
+      LOCUST_HOST: http://frontend-proxy:8080
+      LOCUST_HTTP_USER_WEIGHT: '9'
+      LOCUST_USERS: '2'
+      LOCUST_WEB_HOST: 0.0.0.0
+      LOCUST_WEB_PORT: '8089'
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      OTEL_PYTHON_SDK_INTERNAL_METRICS_ENABLED: 'true'
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    health:
+      path: /
+      interval: 10
+      timeout: 5
+      failThreshold: 3
+      startupGracePeriod: 60
+    image: ghcr.io/open-telemetry/demo:3.1.0-load-generator@sha256:b130d6cee6cb36a2799787a553168811e3ccc5408fe5dad0bc4b4d8302c7a63c

@@ -1,0 +1,26 @@
+gatewayNamespace: loco-system
+clickhouse:
+  clickhouse:
+    persistence:
+      enabled: false
+    resources:
+      requests:
+        cpu: 250m
+        memory: 1Gi
+      limits:
+        cpu: "1"
+        memory: 2Gi
+    settings:
+      mark_cache_size: "268435456"
+      index_mark_cache_size: "67108864"
+      primary_index_cache_size: "134217728"
+      background_schedule_pool_size: "32"
+      max_concurrent_queries: "100"
+obsProxy:
+  enabled: true
+  auth:
+    existingSecret: loco-demo-proxy-auth
+  controlPlane:
+    url: http://loco-demo-api:8000
+  cors:
+    allowedOrigins: [http://localhost:8080]

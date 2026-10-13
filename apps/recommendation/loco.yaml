@@ -1,0 +1,27 @@
+version: 1
+partial: recommendation
+services:
+  recommendation:
+    port: 9001
+    env:
+      FLAGD_HOST: flagd
+      FLAGD_PORT: '8013'
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      OTEL_PYTHON_LOG_CORRELATION: 'true'
+      OTEL_PYTHON_SDK_INTERNAL_METRICS_ENABLED: 'true'
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+      RECOMMENDATION_PORT: '9001'
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    context: source
+    dockerfile: src/recommendation/Dockerfile

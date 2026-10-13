@@ -1,0 +1,53 @@
+version: 1
+partial: frontend-proxy
+services:
+  frontend-proxy:
+    port: 8080
+    env:
+      CHATBOT_HOST: chatbot
+      CHATBOT_PORT: '7860'
+      ENVOY_ADDR: 0.0.0.0
+      ENVOY_ADMIN_PORT: '10000'
+      ENVOY_PORT: '8080'
+      FIREPIT_HOST: firepit
+      FIREPIT_PORT: '8080'
+      FLAGD_HOST: flagd
+      FLAGD_PORT: '8013'
+      FLAGD_UI_HOST: flagd-ui
+      FLAGD_UI_PORT: '4000'
+      FRONTEND_HOST: frontend
+      FRONTEND_PORT: '8080'
+      GRAFANA_HOST: grafana
+      GRAFANA_PORT: '3000'
+      IMAGE_PROVIDER_HOST: image-provider
+      IMAGE_PROVIDER_PORT: '8081'
+      JAEGER_HOST: jaeger
+      JAEGER_UI_PORT: '16686'
+      LOCUST_WEB_HOST: load-generator
+      LOCUST_WEB_PORT: '8089'
+      OPAMP_SERVER_HOST: opamp-server
+      OPAMP_SERVER_UI_PORT: '4321'
+      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_COLLECTOR_PORT_GRPC: '4317'
+      OTEL_COLLECTOR_PORT_HTTP: '4318'
+      OTEL_SERVICE_NAMESPACE: opentelemetry-demo
+      TELEMETRY_DOCS_HOST: telemetry-docs
+      TELEMETRY_DOCS_PORT: '8000'
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    health:
+      path: /
+      interval: 10
+      timeout: 5
+      failThreshold: 3
+      startupGracePeriod: 60
+    domains:
+    - shop.demo.test.local
+    image: ghcr.io/open-telemetry/demo:3.1.0-frontend-proxy@sha256:fd4da88bfeaadd9437a4ee00f708e129a9eedb9c48874cea8e94b034983280a1

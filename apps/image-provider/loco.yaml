@@ -1,0 +1,25 @@
+version: 1
+partial: image-provider
+services:
+  image-provider:
+    port: 8081
+    env:
+      IMAGE_PROVIDER_PORT: '8081'
+      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_COLLECTOR_PORT_GRPC: '4317'
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    health:
+      path: /status
+      interval: 10
+      timeout: 5
+      failThreshold: 3
+      startupGracePeriod: 60
+    image: ghcr.io/open-telemetry/demo:3.1.0-image-provider@sha256:46d1a7e95109c0064122ca0bfb49cd05191fb90a6264b6be508e0d98f2c963f1

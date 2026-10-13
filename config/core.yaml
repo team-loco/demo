@@ -1,0 +1,13 @@
+global:
+  domain:
+    apps: [demo.test.local]
+    platform: platform.test.local
+  cloudProvider:
+    type: ""
+certManager:
+  issuer:
+    email: demo@example.test
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+envoyProxy:
+  tracing:
+    samplingRate: 100

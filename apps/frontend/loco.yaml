@@ -1,0 +1,40 @@
+version: 1
+partial: frontend
+services:
+  frontend:
+    port: 8080
+    env:
+      AD_ADDR: ad:9555
+      CART_ADDR: cart:7070
+      CHECKOUT_ADDR: checkout:5050
+      CURRENCY_ADDR: currency:7001
+      ENV_PLATFORM: loco
+      FLAGD_HOST: flagd
+      FLAGD_PORT: '8013'
+      FRONTEND_ADDR: frontend:8080
+      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      PORT: '8080'
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://localhost:8080/otlp-http/v1/traces
+      RECOMMENDATION_ADDR: recommendation:9001
+      SHIPPING_ADDR: http://shipping:50050
+      WEB_OTEL_SERVICE_NAME: frontend-web
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 1Gi
+        replicas:
+          min: 1
+          max: 1
+    health:
+      path: /api/products
+      interval: 10
+      timeout: 5
+      failThreshold: 3
+      startupGracePeriod: 60
+    image: ghcr.io/open-telemetry/demo:3.1.0-frontend@sha256:28358db4620686eda30dfabfc770b9ff0db73819ebac0895064271b446110289

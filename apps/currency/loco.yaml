@@ -1,0 +1,22 @@
+version: 1
+partial: currency
+services:
+  currency:
+    port: 7001
+    env:
+      CURRENCY_PORT: '7001'
+      IPV6_ENABLED: 'false'
+      OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
+      OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+      VERSION: 3.0.0
+      OTEL_TRACES_SAMPLER: always_on
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    regions:
+      us-east-1:
+        cpu: 250m
+        memory: 512Mi
+        replicas:
+          min: 1
+          max: 1
+    image: ghcr.io/open-telemetry/demo:3.1.0-currency@sha256:ba65e72d5841f909e0ee09498572092923f59e249ae4bf084ab63a82b33811c1
