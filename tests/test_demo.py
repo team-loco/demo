@@ -1,9 +1,10 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 
@@ -91,6 +92,34 @@ class DeploymentContractTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_identity_and_cli_credentials_come_from_public_api_responses(self):
+        responses = {
+            "WhoAmI": {"user": {"id": "user-from-api"}},
+            "UpdateUser": {}, "ApproveCLILogin": {"code": "approved-code"},
+            "ExchangeCLICode": {"tokens": {"accessToken": "issued-access-token", "refreshToken": "issued-refresh-token", "expiresIn": "900"}},
+            "ListUserOrgs": {"orgs": []}, "CreateOrg": {"orgId": "org-from-api"},
+            "ListOrgWorkspaces": {"workspaces": []}, "CreateWorkspace": {"workspaceId": "workspace-from-api"},
+            "ListEnvironments": {"environments": [{"name": "production", "id": "environment-from-api"}]},
+        }
+        provider = MagicMock()
+        provider.__enter__.return_value = io.BytesIO(b'{"id_token":"oidc-provider-token"}')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "cli").mkdir()
+            (path / "secrets.json").write_text(json.dumps({"database": "temporary-password"}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo.urllib.request, "urlopen", return_value=provider), \
+                 patch.object(demo, "api", side_effect=lambda method, data, **kwargs: responses[method.rsplit("/", 1)[1]]) as calls:
+                demo.create_identity()
+            identity = json.loads((path / "identity.json").read_text())
+            self.assertEqual(identity["workspaceId"], "workspace-from-api")
+            credentials = json.loads((path / "cli/credentials.json").read_text())
+            self.assertEqual(credentials["Token"], "issued-access-token")
+            self.assertEqual(credentials["RefreshToken"], "issued-refresh-token")
+            approval = next(c for c in calls.call_args_list if c.args[0].endswith("/ApproveCLILogin"))
+            self.assertEqual(approval.kwargs["token"], "oidc-provider-token")
+            self.assertEqual(len(approval.args[1]["codeChallenge"]), 43)
+
     def test_source_deploy_records_actual_builder_node_placement(self):
         responses = [
             {"items": [{"metadata": {"name": "build-pod"}, "spec": {"nodeName": "loco-demo-worker"}}]},
