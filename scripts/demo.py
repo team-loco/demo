@@ -121,7 +121,7 @@ def wait_for(name, predicate, seconds=READY_SECONDS):
         try:
             if predicate():
                 return
-        except (RuntimeError, urllib.error.URLError, IndexError, KeyError) as exc:
+        except (RuntimeError, urllib.error.URLError, OSError, IndexError, KeyError) as exc:
             last = exc
         if time.monotonic() >= deadline:
             raise RuntimeError(f"Timed out waiting for {name}. {last or ''}")
@@ -549,10 +549,11 @@ def traffic():
     proc = subprocess.Popen(["kubectl", "--kubeconfig", str(STATE / "kubeconfig"), "--context", CONTEXT,
                              "-n", NAMESPACE, "port-forward", "service/resource-" + resources["frontend"],
                              f"{port}:80"], stdout=log, stderr=subprocess.STDOUT)
-    def request(path, body=None):
+    def request(path, body=None, checkout=False):
+        request_trace = trace_id if checkout else secrets.token_hex(16)
         req = urllib.request.Request("http://127.0.0.1:" + str(port) + path,
               data=json.dumps(body).encode() if body is not None else None,
-              headers={"Content-Type": "application/json", "traceparent": f"00-{trace_id}-{secrets.token_hex(8)}-01",
+              headers={"Content-Type": "application/json", "traceparent": f"00-{request_trace}-{secrets.token_hex(8)}-01",
                        "baggage": "synthetic_request=true"})
         with urllib.request.urlopen(req, timeout=30) as response:
             return json.load(response)
@@ -565,7 +566,10 @@ def traffic():
             raise RuntimeError("Add-to-cart response contains no items")
         person = json.loads((ROOT / "upstream/src/load-generator/people.json").read_text())[0]
         person["userId"] = user_id
-        order = request("/api/checkout?currencyCode=USD", person)
+        recommendations = request("/api/recommendations?currencyCode=USD")
+        if not recommendations:
+            raise RuntimeError("Recommendation service returned no products")
+        order = request("/api/checkout?currencyCode=USD", person, checkout=True)
         if not order.get("orderId"):
             raise RuntimeError("Checkout returned no orderId: " + json.dumps(order))
         (STATE / "order.json").write_text(json.dumps(order))
@@ -577,19 +581,39 @@ def traffic():
         log.close()
 
 
+def connected_trace(rows, resources):
+    by_id = {row["SpanId"]: row for row in rows}
+    frontend_spans = {row["SpanId"] for row in rows if row["ResourceId"] == resources["frontend"]}
+    for name in ["checkout", "payment", "shipping"]:
+        candidates = [row for row in rows if row["ResourceId"] == resources[name]]
+        connected = False
+        for span in candidates:
+            parent = span["ParentSpanId"]
+            visited = set()
+            while parent in by_id and parent not in visited:
+                if parent in frontend_spans:
+                    connected = True
+                    break
+                visited.add(parent)
+                parent = by_id[parent]["ParentSpanId"]
+        if not connected:
+            return False
+    return bool(frontend_spans)
+
+
 def check_telemetry():
     trace_id = json.loads((STATE / "trace.json").read_text())["traceId"]
-    query = f"SELECT DISTINCT ResourceAttributes['loco.resource.id'] AS resource FROM otel_traces WHERE TraceId='{trace_id}' AND ResourceAttributes['loco.workspace.id']='{WORKSPACE}'"
+    query = f"SELECT SpanId, ParentSpanId, ResourceId, ServiceName FROM otel_traces WHERE TraceId='{trace_id}' AND WorkspaceId='{WORKSPACE}'"
     resources = json.loads((STATE / "resources.json").read_text())
-    required = {resources[n] for n in ["frontend", "checkout", "payment", "shipping"]}
     def connected():
         rows = [json.loads(line) for line in ch(query).splitlines() if line]
-        return required <= {r["resource"] for r in rows}
+        return connected_trace(rows, resources)
     wait_for("connected checkout trace with Loco workspace attribution", connected, TELEMETRY_SECONDS)
-    for table in ["otel_logs", "otel_metrics_sum"]:
-        wait_for(table + " for demo workspace", lambda table=table: int(json.loads(ch(
-            f"SELECT count(*) AS count FROM {table} WHERE ResourceAttributes['loco.workspace.id']='{WORKSPACE}'"))["count"]) > 0,
-            TELEMETRY_SECONDS)
+    order_id = json.loads((STATE / "order.json").read_text())["orderId"]
+    log_query = f"SELECT count(*) AS count FROM otel_logs WHERE WorkspaceId='{WORKSPACE}' AND ResourceId IN ('{resources['checkout']}', '{resources['email']}') AND position(concat(Body, toString(LogAttributes)), '{order_id}') > 0"
+    metric_query = f"SELECT count(*) AS count FROM otel_metrics_sum WHERE WorkspaceId='{WORKSPACE}' AND ResourceId='{resources['payment']}' AND MetricName='demo.payment.transactions'"
+    for name, sql_query in [("checkout order logs", log_query), ("payment transaction counter", metric_query)]:
+        wait_for(name, lambda sql_query=sql_query: int(json.loads(ch(sql_query))["count"]) > 0, TELEMETRY_SECONDS)
     (OUT / "trace-evidence.jsonl").write_text(ch(query) + "\n")
     return "Connected frontend/checkout/payment/shipping spans, logs and counter metrics attributed to the demo workspace"
 

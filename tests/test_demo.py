@@ -84,6 +84,24 @@ class DeploymentContractTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def test_shared_trace_id_is_insufficient_without_parent_links(self):
+        resources = {name: name for name in ["frontend", "checkout", "payment", "shipping"]}
+        disconnected = [{"SpanId": name, "ParentSpanId": "external", "ResourceId": name}
+                        for name in resources]
+        self.assertFalse(demo.connected_trace(disconnected, resources))
+        linked = [
+            {"SpanId": "front", "ParentSpanId": "external", "ResourceId": "frontend"},
+            {"SpanId": "check", "ParentSpanId": "front", "ResourceId": "checkout"},
+            {"SpanId": "pay", "ParentSpanId": "check", "ResourceId": "payment"},
+            {"SpanId": "ship", "ParentSpanId": "check", "ResourceId": "shipping"},
+        ]
+        self.assertTrue(demo.connected_trace(linked, resources))
+
+    def test_cyclic_span_graph_cannot_pass_or_loop_forever(self):
+        resources = {name: name for name in ["frontend", "checkout", "payment", "shipping"]}
+        rows = [{"SpanId": name, "ParentSpanId": name, "ResourceId": name} for name in resources]
+        self.assertFalse(demo.connected_trace(rows, resources))
+
     def test_private_addresses_resolve_without_changing_listening_ports(self):
         env = {"CART_ADDR": "cart:7070", "SHIPPING_ADDR": "http://shipping:50050",
                "FRONTEND_HOST": "frontend", "FRONTEND_PORT": "8080",
@@ -138,6 +156,16 @@ class HarnessTests(unittest.TestCase):
                 raise RuntimeError("connection refused")
             with self.assertRaisesRegex(RuntimeError, "connection refused"):
                 demo.wait_for("API", broken, seconds=1)
+
+    def test_startup_connection_reset_is_retried_until_health_succeeds(self):
+        checks = iter([ConnectionResetError("connection reset by peer"), True])
+        def health():
+            value = next(checks)
+            if isinstance(value, Exception):
+                raise value
+            return value
+        with patch.object(demo.time, "sleep"):
+            demo.wait_for("API health", health)
 
 
 if __name__ == "__main__":
