@@ -82,25 +82,86 @@ class DeploymentContractTests(unittest.TestCase):
         operator = yaml.safe_load((ROOT / "config/operator.yaml").read_text())
         self.assertEqual(operator["builds"]["nodeSelector"]["loco.build/demo-builder"], "true")
 
+    def test_app_requests_leave_cpu_for_the_builder_and_platform(self):
+        millicores = 0
+        for name in demo.APPS:
+            config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
+            millicores += int(config["services"][name]["regions"]["us-east-1"]["cpu"].removesuffix("m"))
+        self.assertLessEqual(millicores, 2000)
+
 
 class HarnessTests(unittest.TestCase):
-    def test_shared_trace_id_is_insufficient_without_parent_links(self):
-        resources = {name: name for name in ["frontend", "checkout", "payment", "shipping"]}
-        disconnected = [{"SpanId": name, "ParentSpanId": "external", "ResourceId": name}
-                        for name in resources]
-        self.assertFalse(demo.connected_trace(disconnected, resources))
-        linked = [
-            {"SpanId": "front", "ParentSpanId": "external", "ResourceId": "frontend"},
-            {"SpanId": "check", "ParentSpanId": "front", "ResourceId": "checkout"},
-            {"SpanId": "pay", "ParentSpanId": "check", "ResourceId": "payment"},
-            {"SpanId": "ship", "ParentSpanId": "check", "ResourceId": "shipping"},
+    def test_source_deploy_records_actual_builder_node_placement(self):
+        responses = [
+            {"items": [{"metadata": {"name": "build-pod"}, "spec": {"nodeName": "loco-demo-worker"}}]},
+            {"metadata": {"labels": {"loco.build/demo-builder": "true"}}},
         ]
-        self.assertTrue(demo.connected_trace(linked, resources))
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "stage_app"), patch.object(demo, "cli", return_value="deployed"), \
+             patch.object(demo, "list_builds", return_value=[{"id": "build-id", "status": "BUILD_STATUS_SUCCEEDED", "createdAt": "2026-10-12T00:00:00Z"}]), \
+             patch.object(demo, "api", return_value={"build": {"status": "BUILD_STATUS_SUCCEEDED"}}), \
+             patch.object(demo, "kube", side_effect=[json.dumps(r) for r in responses]):
+            demo.deploy_one("payment", {"payment": "resource-id"})
+            evidence = json.loads((Path(tmp) / "build-payment.json").read_text())
+            self.assertEqual(evidence[0]["node"], "loco-demo-worker")
 
-    def test_cyclic_span_graph_cannot_pass_or_loop_forever(self):
-        resources = {name: name for name in ["frontend", "checkout", "payment", "shipping"]}
-        rows = [{"SpanId": name, "ParentSpanId": name, "ResourceId": name} for name in resources]
-        self.assertFalse(demo.connected_trace(rows, resources))
+    def test_source_deploy_on_an_unlabelled_node_fails(self):
+        responses = [
+            {"items": [{"metadata": {"name": "build-pod"}, "spec": {"nodeName": "control-plane"}}]},
+            {"metadata": {"labels": {}}},
+        ]
+        with patch.object(demo, "stage_app"), patch.object(demo, "cli", return_value="deployed"), \
+             patch.object(demo, "list_builds", return_value=[{"id": "build-id", "status": "BUILD_STATUS_SUCCEEDED", "createdAt": "2026-10-12T00:00:00Z"}]), \
+             patch.object(demo, "api", return_value={"build": {"status": "BUILD_STATUS_SUCCEEDED"}}), \
+             patch.object(demo, "kube", side_effect=[json.dumps(r) for r in responses]):
+            with self.assertRaisesRegex(RuntimeError, "not a builder worker"):
+                demo.deploy_one("payment", {"payment": "resource-id"})
+
+    def test_harness_has_no_direct_database_client_or_seed_path(self):
+        source = (ROOT / "scripts/demo.py").read_text()
+        for forbidden in ["psql", "clickhouse-client", "def sql(", "def ch(", "api/seed/", "INSERT INTO", "SELECT count"]:
+            self.assertNotIn(forbidden, source)
+        for required in ["BuildService/ListBuilds", "BuildService/GetBuild", "ResourceService/GetResource",
+                         "WorkspaceService/CreateWorkspace", "OrgService/CreateOrg", "AuthService/ExchangeCLICode"]:
+            self.assertIn(required, source)
+
+    def test_missing_trace_query_is_a_blocker(self):
+        with self.assertRaises(demo.PublicAPIGap) as raised:
+            demo.check_traces()
+        self.assertEqual(raised.exception.issue, demo.KNOWN["trace-api"])
+
+    def test_missing_cluster_enrollment_has_no_database_fallback(self):
+        with self.assertRaises(demo.PublicAPIGap) as raised:
+            demo.require_cluster_enrollment()
+        self.assertEqual(raised.exception.issue, demo.KNOWN["enrollment"])
+
+    def test_public_api_lists_follow_pagination(self):
+        pages = [{"resources": [{"id": "one"}], "nextPageToken": "next"}, {"resources": [{"id": "two"}]}]
+        with patch.object(demo, "api", side_effect=pages) as call:
+            records = demo.list_api("ResourceService/ListWorkspaceResources", {"workspaceId": "ws"}, "resources")
+        self.assertEqual([r["id"] for r in records], ["one", "two"])
+        self.assertEqual(call.call_args_list[-1].args[1]["pageToken"], "next")
+
+    def test_logs_use_public_proxy_api_and_reject_another_resource(self):
+        with patch.object(demo, "workspace_id", return_value="ws"), \
+             patch.object(demo, "observability_rpc", return_value={"entries": [{"resourceId": "other", "body": "order"}]}) as call:
+            with self.assertRaisesRegex(RuntimeError, "outside the requested scope"):
+                demo.order_in_logs(["payment"], "order")
+        self.assertEqual(call.call_args.args[0], "QueryLogs")
+        self.assertEqual(call.call_args.args[1]["resourceIds"], ["payment"])
+
+    def test_metrics_use_public_proxy_api(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "workspace_id", return_value="ws"), \
+                 patch.object(demo, "identity", return_value={"environmentId": "env"}), \
+                 patch.object(demo, "observability_rpc", return_value={"series": [{"resourceId": "payment-id", "points": [{"value": 1}]}]}) as call:
+                demo.check_metrics()
+            self.assertEqual(call.call_args.args[0], "QueryMetrics")
+            self.assertEqual(call.call_args.args[1]["metricName"], "demo.payment.transactions")
+            self.assertTrue((path / "metrics-api.json").exists())
 
     def test_private_addresses_resolve_without_changing_listening_ports(self):
         env = {"CART_ADDR": "cart:7070", "SHIPPING_ADDR": "http://shipping:50050",
@@ -142,13 +203,11 @@ class HarnessTests(unittest.TestCase):
                 self.assertNotIn("secret-session-value-must-not-leak", results)
                 self.assertIn("[REDACTED]", results)
 
-    def test_omitted_health_never_passes_when_loco_injects_http_probes(self):
-        deployment = {"spec": {"template": {"spec": {"containers": [
-            {"livenessProbe": {"httpGet": {"path": "/health", "port": 50051}},
-             "readinessProbe": {"httpGet": {"path": "/health", "port": 50051}}}]}}}}
-        with patch.object(demo, "wait_for"), patch.object(demo, "kube", return_value=json.dumps(deployment)):
-            with self.assertRaisesRegex(RuntimeError, "omits health but Loco installed probes"):
-                demo.check_pods("payment", "payment-id")
+    def test_omitted_health_never_passes_when_resource_api_reports_http_checks(self):
+        resource = {"spec": {"service": {"healthCheck": {"path": "/health"}}}}
+        with patch.object(demo, "api", return_value={"resource": resource}):
+            with self.assertRaises(demo.PublicAPIGap):
+                demo.check_resource("payment", "payment-id")
 
     def test_timeout_reports_the_last_failure(self):
         with patch.object(demo.time, "monotonic", side_effect=[0, 5]):

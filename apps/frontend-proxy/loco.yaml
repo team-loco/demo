@@ -37,7 +37,7 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
       us-east-1:
-        cpu: 250m
+        cpu: 100m
         memory: 512Mi
         replicas:
           min: 1

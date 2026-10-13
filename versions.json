@@ -35,7 +35,8 @@
     "valkey-cart": "ghcr.io/valkey-io/valkey:9.0.4-alpine3.23@sha256:107b203169a20ef7c87548c157f4e4a833dbbbd20fefd3a26740b7f98ac80216",
     "astronomy-db": "postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636",
     "busybox": "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
-    "flagd-ui": "ghcr.io/open-telemetry/demo:3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062"
+    "flagd-ui": "ghcr.io/open-telemetry/demo:3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062",
+    "dex": "ghcr.io/dexidp/dex:v2.46.0@sha256:933fcd3f523338c847b88ef84a7145fb2fcb7b9917f08418612afeaaa2001777"
   },
   "apps": {
     "ad": "ghcr.io/open-telemetry/demo:3.1.0-ad@sha256:dfd7a4697116d7f961f2c6e8be1bd187f2af7555d6d4138c016097921d7c7ed0",

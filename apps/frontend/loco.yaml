@@ -26,7 +26,7 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 250m
+        cpu: 100m
         memory: 1Gi
         replicas:
           min: 1
