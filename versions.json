@@ -1,20 +1,20 @@
 {
   "loco": {
-    "cli": "v0.0.103",
-    "commit": "3b24a12d3592359824a6421dbc6f37fe0f7eec9e",
+    "cli": "v0.0.111",
+    "commit": "552284f8a0d8605cd94e50c9da1b7e4339af6d2e",
     "chartSource": "release-tag",
     "images": {
-      "api": "ghcr.io/team-loco/loco-api:sha-3b24a12d3592359824a6421dbc6f37fe0f7eec9e@sha256:e9a7dd7766f52ae60bf31686f2501fc338e2e91bb5bb8b139139cc4a6189e9d9",
-      "agent": "ghcr.io/team-loco/loco-agent:sha-3b24a12d3592359824a6421dbc6f37fe0f7eec9e@sha256:f6ad239e7b08572eb0f7595bad879c4951095127260cfc62b5a224df7c848062",
-      "controller": "ghcr.io/team-loco/loco-controller:sha-3b24a12d3592359824a6421dbc6f37fe0f7eec9e@sha256:eaebb5818bc7dd0853221fd883d1c4cc6c5f34484c5c7a86ee0e72ef0f95e9c6",
-      "builder": "ghcr.io/team-loco/loco-builder:sha-3b24a12d3592359824a6421dbc6f37fe0f7eec9e@sha256:6a91fb38b972cf9403bc10ce7513a5d966153193c4496f63bacea4b28cc88c59",
-      "obs-proxy": "ghcr.io/team-loco/loco-obs-proxy:sha-3b24a12d3592359824a6421dbc6f37fe0f7eec9e@sha256:5ac6b6a45c574c73895b263f16723fcf8fac1fb69801ba25764164b182272f18"
+      "api": "ghcr.io/team-loco/loco-api:sha-552284f8a0d8605cd94e50c9da1b7e4339af6d2e@sha256:94595601e81f68dd97ce780728f5a3d675b86031c15e4f61824c0ff756b9ae92",
+      "agent": "ghcr.io/team-loco/loco-agent:sha-552284f8a0d8605cd94e50c9da1b7e4339af6d2e@sha256:e46a692f21da9e85ef4cd002cf4fa56885868547a646791b1fb50e4bcd0d64f7",
+      "controller": "ghcr.io/team-loco/loco-controller:sha-552284f8a0d8605cd94e50c9da1b7e4339af6d2e@sha256:0aca38e876cba70fa3182f8f2a41f557eaa6b389e5c02928501e1d4d77d45137",
+      "builder": "ghcr.io/team-loco/loco-builder:sha-552284f8a0d8605cd94e50c9da1b7e4339af6d2e@sha256:67ab6d894f2f4c383454806abe4ea08334d3f01ca14a57cc76f8508e290eaaf3",
+      "obs-proxy": "ghcr.io/team-loco/loco-obs-proxy:sha-552284f8a0d8605cd94e50c9da1b7e4339af6d2e@sha256:1018040e19a7f4fe59c2d6af4ff3019040c3e356e78cf2bd71f29da97b63bf95"
     },
     "cliChecksums": {
-      "loco-darwin-amd64": "9745e9f8615225e01fc97c9df0057239783fd9a6bb8c587bd9d654e930499464",
-      "loco-darwin-arm64": "fa7d3349e4592ae3b950ec0e331c7c41a07e8665c49b1dd5dd9b660f06299b0c",
-      "loco-linux-amd64": "75659b8f4c712aac024d4ec01aac4760feb9709617ca02cfb9c2052296638d73",
-      "loco-linux-arm64": "2c257b1c1fc834dd6e1cb41b0c91cd25800de77dceebc981f0e7794ce61bd1dd"
+      "loco-darwin-amd64": "5c8ca0f5dbadd827ac711cd7cf5e09884ef76eaaf404ac2edb2f74415f7ec264",
+      "loco-darwin-arm64": "482a13f2d50e67a63b851b9c3e41aa8c687e76bfbf97251ed7e4efad210ecfa0",
+      "loco-linux-amd64": "fab8563660852d281e5bdfe2db9522acc7288be38adc30c7b9e1156a7c452fe4",
+      "loco-linux-arm64": "cd19e2135e63efb6045a50896c304144f2a7837888b5723f05c30fdc44d4bae6"
     }
   },
   "upstream": {

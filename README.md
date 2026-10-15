@@ -30,9 +30,9 @@ mise run e2e
 
 `setup` installs pinned tools and Python dependencies and prepares the upstream sources and Loco release artifacts. `test` runs the runner's unit tests. `validate` checks the application configurations and rendered infrastructure. `e2e` provisions the local installation and runs the complete deployment and observability test.
 
-**Current status:** the pinned Loco release is v0.0.103, which predates the automatic cluster attachment and regional observability APIs used by this runner. The E2E preflight currently exits nonzero before creating infrastructure. A compatible published release and a successful full run are still required. Unit and configuration checks can run independently.
+**Current status:** the runner pins published Loco v0.0.111 binaries and matching immutable platform images. Its release-contract preflight, unit tests, and configuration checks pass. The complete 16-service E2E is being verified in AMD64 CI; those preliminary checks do not establish a successful deployment.
 
-The pinned platform images require Linux AMD64. GitHub Actions uses an AMD64 runner; native Apple Silicon support also requires updated platform images and compatible application images.
+The pinned platform images include Linux AMD64 and ARM64 manifests. GitHub Actions uses an AMD64 runner. A native Apple Silicon run also requires compatible application images.
 
 ## What the test checks
 
