@@ -100,12 +100,14 @@ class HarnessTests(unittest.TestCase):
             "ListUserOrgs": {"orgs": []}, "CreateOrg": {"orgId": "org-from-api"},
             "ListOrgWorkspaces": {"workspaces": []}, "CreateWorkspace": {"workspaceId": "workspace-from-api"},
             "ListEnvironments": {"environments": [{"name": "production", "id": "environment-from-api"}]},
+            "CreateToken": {"token": "telemetry-token-issued-by-api"},
         }
         provider = MagicMock()
         provider.__enter__.return_value = io.BytesIO(b'{"id_token":"oidc-provider-token"}')
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / "cli").mkdir()
+            (path / "endpoint.json").write_text(json.dumps({"cliApiUrl": "http://kind-node:30080"}))
             (path / "secrets.json").write_text(json.dumps({"database": "temporary-password"}))
             with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
                  patch.object(demo.urllib.request, "urlopen", return_value=provider), \
@@ -114,8 +116,12 @@ class HarnessTests(unittest.TestCase):
             identity = json.loads((path / "identity.json").read_text())
             self.assertEqual(identity["workspaceId"], "workspace-from-api")
             credentials = json.loads((path / "cli/credentials.json").read_text())
-            self.assertEqual(credentials["Token"], "issued-access-token")
-            self.assertEqual(credentials["RefreshToken"], "issued-refresh-token")
+            self.assertEqual(credentials["token"], "issued-access-token")
+            self.assertEqual(credentials["refreshToken"], "issued-refresh-token")
+            config = yaml.safe_load((path / "cli/config.yaml").read_text())
+            self.assertEqual(config["scopes"]["default"]["workspace"]["id"], "workspace-from-api")
+            self.assertEqual(config["locoHost"], "http://kind-node:30080")
+            self.assertEqual(json.loads((path / "secrets.json").read_text())["telemetry"], "telemetry-token-issued-by-api")
             approval = next(c for c in calls.call_args_list if c.args[0].endswith("/ApproveCLILogin"))
             self.assertEqual(approval.kwargs["token"], "oidc-provider-token")
             self.assertEqual(len(approval.args[1]["codeChallenge"]), 43)
@@ -154,15 +160,14 @@ class HarnessTests(unittest.TestCase):
                          "WorkspaceService/CreateWorkspace", "OrgService/CreateOrg", "AuthService/ExchangeCLICode"]:
             self.assertIn(required, source)
 
-    def test_missing_trace_query_is_a_blocker(self):
-        with self.assertRaises(demo.PublicAPIGap) as raised:
-            demo.check_traces()
-        self.assertEqual(raised.exception.issue, demo.KNOWN["trace-api"])
-
-    def test_missing_cluster_enrollment_has_no_database_fallback(self):
-        with self.assertRaises(demo.PublicAPIGap) as raised:
-            demo.require_cluster_enrollment()
-        self.assertEqual(raised.exception.issue, demo.KNOWN["enrollment"])
+    def test_old_release_contracts_fail_before_creating_infrastructure(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "CORE", Path(tmp)), \
+             patch.object(demo, "prepare"), patch.object(demo, "run") as run:
+            with self.assertRaises(demo.PublicAPIGap) as raised:
+                demo.up()
+            self.assertIn(demo.VERSIONS["loco"]["cli"], str(raised.exception))
+            self.assertIn("not released artifacts", str(raised.exception))
+            run.assert_not_called()
 
     def test_public_api_lists_follow_pagination(self):
         pages = [{"resources": [{"id": "one"}], "nextPageToken": "next"}, {"resources": [{"id": "two"}]}]
@@ -173,6 +178,7 @@ class HarnessTests(unittest.TestCase):
 
     def test_logs_use_public_proxy_api_and_reject_another_resource(self):
         with patch.object(demo, "workspace_id", return_value="ws"), \
+             patch.object(demo, "identity", return_value={"environmentId": "env"}), \
              patch.object(demo, "observability_rpc", return_value={"entries": [{"resourceId": "other", "body": "order"}]}) as call:
             with self.assertRaisesRegex(RuntimeError, "outside the requested scope"):
                 demo.order_in_logs(["payment"], "order")
@@ -183,6 +189,7 @@ class HarnessTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
+            (path / "metric-baseline.json").write_text(json.dumps({"value": 0}))
             with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
                  patch.object(demo, "workspace_id", return_value="ws"), \
                  patch.object(demo, "identity", return_value={"environmentId": "env"}), \
@@ -254,6 +261,153 @@ class HarnessTests(unittest.TestCase):
             return value
         with patch.object(demo.time, "sleep"):
             demo.wait_for("API health", health)
+
+
+class PublicTelemetryTests(unittest.TestCase):
+    trace_id = "a" * 32
+    resources = {name: name + "-id" for name in ["frontend", "checkout", "payment", "shipping", "product-catalog"]}
+
+    def spans(self):
+        parents = [None, 1, 2, 2, 2]
+        return [{"traceId": self.trace_id, "spanId": f"{index:016x}",
+                 "parentSpanId": f"{parent:016x}" if parent else "",
+                 "resourceId": resource, "workspaceId": "workspace", "environmentId": "environment",
+                 "resourceAttributes": {"loco.region": demo.REGION}}
+                for index, (resource, parent) in enumerate(zip(self.resources.values(), parents), 1)]
+
+    def test_observability_uses_the_main_api_and_real_scoped_token(self):
+        request = {"workspaceId": "workspace", "resourceIds": ["payment-id"]}
+        with patch.object(demo, "credentials", return_value={"telemetry": "api-issued-workspace-token"}), \
+             patch.object(demo, "api", return_value={}) as call:
+            demo.observability_rpc("QueryLogs", request)
+        call.assert_called_once_with("loco.observability.v1.ObservabilityProxyService/QueryLogs",
+                                     {**request, "regions": [demo.REGION]}, token="api-issued-workspace-token")
+        self.assertNotIn("regions", request)
+
+    def test_trace_requires_real_parent_connections_between_services(self):
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}):
+            spans = self.spans()
+            self.assertTrue(demo.connected_checkout_trace(spans, self.trace_id, self.resources))
+            self.assertTrue(demo.connected_checkout_trace(spans + [spans[0]], self.trace_id, self.resources))
+            for span in spans:
+                span["parentSpanId"] = ""
+            self.assertFalse(demo.connected_checkout_trace(spans, self.trace_id, self.resources))
+
+    def test_trace_rejects_wrong_scope_and_conflicting_identity(self):
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}):
+            for field, value in [("workspaceId", "other"), ("environmentId", "other"),
+                                 ("resourceId", "other"), ("traceId", "b" * 32)]:
+                with self.subTest(field=field):
+                    spans = self.spans()
+                    spans[0][field] = value
+                    with self.assertRaisesRegex(RuntimeError, "outside the requested"):
+                        demo.connected_checkout_trace(spans, self.trace_id, self.resources)
+            spans = self.spans()
+            duplicate = {**spans[0], "parentSpanId": "b" * 16}
+            with self.assertRaisesRegex(RuntimeError, "conflicting duplicate"):
+                demo.connected_checkout_trace(spans + [duplicate], self.trace_id, self.resources)
+
+    def test_traces_follow_cursors_and_preserve_scoping(self):
+        responses = [{"spans": [{"spanId": "one"}], "nextCursor": "cursor"}, {"spans": [{"spanId": "two"}]}]
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+             patch.object(demo, "observability_rpc", side_effect=responses) as call:
+            spans = demo.query_trace(self.trace_id, list(self.resources.values()))
+        self.assertEqual([span["spanId"] for span in spans], ["one", "two"])
+        request = call.call_args.args[1]
+        self.assertEqual(request["cursor"], "cursor")
+        self.assertEqual(request["traceId"], self.trace_id)
+        self.assertEqual(request["environmentId"], "environment")
+        self.assertEqual(request["resourceIds"], list(self.resources.values()))
+
+    def test_trace_repeated_cursor_fails_instead_of_looping(self):
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+             patch.object(demo, "observability_rpc", return_value={"nextCursor": "same"}):
+            with self.assertRaisesRegex(RuntimeError, "repeated pagination cursor"):
+                demo.query_trace(self.trace_id, [])
+
+    def test_trace_verification_records_connected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "resources.json").write_text(json.dumps(self.resources))
+            (path / "trace.json").write_text(json.dumps({"traceId": self.trace_id}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "workspace_id", return_value="workspace"), \
+                 patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+                 patch.object(demo, "query_trace", side_effect=[[], self.spans()]) as call, \
+                 patch.object(demo.time, "sleep"):
+                demo.check_traces()
+            self.assertEqual(call.call_count, 2)
+            self.assertEqual(json.loads((path / "traces-api.json").read_text())["traceId"], self.trace_id)
+
+    def test_existing_counter_value_does_not_count_as_an_increase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "metric-baseline.json").write_text(json.dumps({"value": 5}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "payment_counter", return_value=(5, {})), \
+                 patch.object(demo.time, "monotonic", side_effect=[0, demo.TELEMETRY_SECONDS + 1]):
+                with self.assertRaisesRegex(RuntimeError, "Timed out"):
+                    demo.check_metrics()
+            self.assertFalse((path / "metrics-api.json").exists())
+
+    def test_scope_checks_require_permission_denied_not_missing_api(self):
+        with patch.object(demo, "identity", return_value={"orgId": "org"}), \
+             patch.object(demo, "api", return_value={"workspaceId": "other-workspace"}):
+            for status, code in [(404, "unimplemented"), (503, "unavailable")]:
+                with self.subTest(code=code), patch.object(demo, "observability_rpc", side_effect=demo.RPCError("QueryLogs", status, {"code": code})):
+                    with self.assertRaisesRegex(RuntimeError, "did not enforce workspace authorization"):
+                        demo.check_observability_scope()
+            with patch.object(demo, "observability_rpc", side_effect=demo.RPCError("query", 403, {"code": "permission_denied"})) as call:
+                demo.check_observability_scope()
+                self.assertEqual(call.call_count, 3)
+            with patch.object(demo, "observability_rpc", return_value={}):
+                with self.assertRaisesRegex(RuntimeError, "allowed a token"):
+                    demo.check_observability_scope()
+
+
+class BootstrapContractTests(unittest.TestCase):
+    def test_failed_preflight_cleanup_preserves_existing_infrastructure(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "STATE", Path(tmp)), \
+             patch.object(demo, "run") as run, patch.object(demo, "compose") as compose:
+            (Path(tmp) / "compose.yaml").write_text("services: {}")
+            (Path(tmp) / "kubeconfig").write_text("existing")
+            demo.down()
+            run.assert_not_called()
+            compose.assert_not_called()
+            self.assertTrue((Path(tmp) / "kubeconfig").exists())
+
+    def test_control_plane_exposes_only_api_with_private_proxy_sidecar(self):
+        docs = demo.control_plane_documents()
+        deployment = next(doc for doc in docs if doc["kind"] == "Deployment")
+        service = next(doc for doc in docs if doc["kind"] == "Service")
+        containers = deployment["spec"]["template"]["spec"]["containers"]
+        self.assertEqual([container["name"] for container in containers], ["api", "observability"])
+        self.assertEqual(service["spec"]["ports"], [{"port": 8000, "targetPort": 8000, "nodePort": demo.API_NODE_PORT}])
+        self.assertEqual(deployment["metadata"]["namespace"], demo.API_NAMESPACE)
+        self.assertEqual(containers[1]["readinessProbe"]["httpGet"]["path"], "/readyz")
+        self.assertFalse(deployment["spec"]["template"]["spec"]["automountServiceAccountToken"])
+        for container in containers:
+            self.assertRegex(container["image"], r"@sha256:[a-f0-9]{64}$")
+        kind = yaml.safe_load((ROOT / "config/kind.yaml").read_text())
+        mapping = kind["nodes"][0]["extraPortMappings"][0]
+        self.assertEqual(mapping["containerPort"], demo.API_NODE_PORT)
+        self.assertEqual(mapping["hostPort"], demo.CLI_PORT)
+        self.assertEqual(mapping["listenAddress"], "127.0.0.1")
+
+    def test_attachment_reads_stable_namespace_identity_and_waits_on_public_regions(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "kube", return_value=json.dumps({"metadata": {"uid": "cluster-uid"}})) as kube, \
+             patch.object(demo, "api", side_effect=[{"regions": []}, {"regions": [{"region": demo.REGION, "healthStatus": "healthy"}]}]) as api, \
+             patch.object(demo.time, "sleep"):
+            demo.check_attachment()
+            evidence = json.loads((Path(tmp) / "cluster-attachment.json").read_text())
+        self.assertEqual(evidence["clusterKey"], "cluster-uid")
+        self.assertEqual(api.call_args.args[0], "loco.resource.v1.ResourceService/ListRegions")
+        kube.assert_called_once_with("get", "namespace", "kube-system", "-o", "json")
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ import base64
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -32,12 +33,16 @@ CLUSTER = "loco-demo"
 PROJECT = "loco-demo"
 CONTEXT = "kind-" + CLUSTER
 CORE = CACHE / "loco"
+REGION = "us-east-1"
+API_NAMESPACE = "observability"
+API_NODE_PORT = 30080
 CLI_PORT = 18000
 DEX_PORT = 18056
 READY_SECONDS = 600
 TELEMETRY_SECONDS = 240
 BUILD_SECONDS = 2100
 RESULTS = []
+INFRA_STARTED = False
 KNOWN = {
     "health": "https://github.com/team-loco/loco/issues/711",
     "discovery": "https://github.com/team-loco/loco/issues/712",
@@ -46,6 +51,13 @@ KNOWN = {
     "trace-api": "https://github.com/team-loco/loco/issues/720",
     "metrics-api": "https://github.com/team-loco/loco/issues/722",
 }
+
+
+class RPCError(RuntimeError):
+    def __init__(self, procedure, status, payload):
+        self.status = status
+        self.code = payload.get("code", "unknown")
+        super().__init__(f"{procedure}: HTTP {status}: {redact(json.dumps(payload))}")
 
 
 class PublicAPIGap(RuntimeError):
@@ -99,6 +111,8 @@ def write_yaml(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False))
+    if path.is_relative_to(STATE):
+        path.chmod(0o600)
 
 
 def kube(*args, **kwargs):
@@ -127,7 +141,12 @@ def rpc(url, procedure, data, token=None):
         with urllib.request.urlopen(req, timeout=30) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        raise RuntimeError(f"{procedure}: {redact(exc.read().decode())}") from exc
+        body = exc.read().decode()
+        try:
+            payload = json.loads(body)
+        except json.JSONDecodeError:
+            payload = {"message": body}
+        raise RPCError(procedure, exc.code, payload) from exc
 
 
 def api(procedure, data, token="session"):
@@ -137,6 +156,7 @@ def api(procedure, data, token="session"):
 
 def list_api(procedure, request, key):
     records = []
+    seen = set()
     request = dict(request)
     while True:
         response = api(procedure, request)
@@ -144,6 +164,9 @@ def list_api(procedure, request, key):
         cursor = response.get("nextPageToken")
         if not cursor:
             return records
+        if cursor in seen:
+            raise RuntimeError(f"{procedure}: repeated pagination cursor")
+        seen.add(cursor)
         request["pageToken"] = cursor
 
 
@@ -151,15 +174,36 @@ def list_builds(resource_id):
     return list_api("loco.build.v1.BuildService/ListBuilds", {"resourceId": resource_id, "pageSize": 200}, "builds")
 
 
-def observability_rpc(method, request):
-    access = api("loco.observability.v1.ObservabilityAccessService/GetObservabilityAccess",
-                 {"workspaceId": workspace_id(), "resourceIds": request.get("resourceIds", [])})
-    endpoints = [c["proxyUrl"] for c in access.get("clusters", []) if c.get("proxyUrl")]
-    if not endpoints:
-        raise PublicAPIGap("GetObservabilityAccess returns no usable proxy endpoint",
-                           "https://github.com/team-loco/loco/issues/642")
-    return rpc(endpoints[0], "loco.observability.v1.ObservabilityProxyService/" + method,
-               request, credentials()["session"])
+def observability_rpc(method, request, token=None):
+    scoped = dict(request)
+    if method in ("QueryLogs", "TailLogs"):
+        scoped["regions"] = [REGION]
+    elif method == "QueryMetrics":
+        scoped["region"] = REGION
+    return api("loco.observability.v1.ObservabilityProxyService/" + method,
+               scoped, token=token or credentials()["telemetry"])
+
+
+def require_release_contracts():
+    required = {
+        "proto/loco/agent/v1/agent.proto": ["string cluster_key =", "string display_name =", "string tier ="],
+        "api/config.go": ["LOCO_AGENT_CONNECTION_SECRETS", "OBSERVABILITY_PROXY_URL"],
+        "proto/loco/observability/v1/observability.proto": ["rpc QueryTraces(", "repeated string regions ="],
+        "internal/session/config.go": ['"config.yaml"'],
+        "cmd/loco/infra/deploy.go": ['cmd.Flags().String("image"'],
+        "observability-proxy/pkg/clickhouse/metrics.go": ["FROM otel_metrics_sum"],
+    }
+    missing = []
+    for name, symbols in required.items():
+        path = CORE / name
+        content = path.read_text() if path.exists() else ""
+        missing.extend(name + ": " + symbol for symbol in symbols if symbol not in content)
+    if missing:
+        raise PublicAPIGap(
+            f"Pinned release {VERSIONS['loco']['cli']} ({VERSIONS['loco']['commit']}) lacks the demo's required contracts: "
+            + "; ".join(missing) + ". Update versions.json only after compatible binaries and images are published; "
+            "unmerged PRs and local source builds are not released artifacts.",
+            KNOWN["enrollment"])
 
 
 def wait_for(name, predicate, seconds=READY_SECONDS):
@@ -261,6 +305,10 @@ def native_cli():
     return CACHE / "bin" / VERSIONS["loco"]["cli"] / f"loco-{platform.system().lower()}-{arch}"
 
 
+def cli_api_url():
+    return json.loads((STATE / "endpoint.json").read_text())["cliApiUrl"]
+
+
 def cli(*args, **kwargs):
     arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
     return run([
@@ -268,7 +316,7 @@ def cli(*args, **kwargs):
         "--mount", f"type=bind,source={ROOT},target=/demo",
         "--mount", f"type=bind,source={STATE / 'cli'},target=/root/.loco",
         "--workdir", "/demo", "--env", "LOCO_CREDENTIAL_STORE=file",
-        "--env", "LOCO_HOST=http://loco-demo-api:8000",
+        "--env", "LOCO_HOST=" + cli_api_url(),
         "--entrypoint", f"/demo/.cache/bin/{VERSIONS['loco']['cli']}/loco-linux-{arch}",
         VERSIONS["infrastructureImages"]["postgres"], *args,
     ], **kwargs)
@@ -343,7 +391,7 @@ def bootstrap_compose():
     (STATE / "cli").mkdir(exist_ok=True)
     if not (STATE / "secrets.json").exists():
         data = {n: secrets.token_hex(24) for n in
-                ["database", "migrator", "ingest", "reader", "secretkey"]}
+                ["database", "migrator", "ingest", "reader", "secretkey", "agent"]}
         data["secretkey"] = base64.b64encode(secrets.token_bytes(32)).decode()
         (STATE / "secrets.json").write_text(json.dumps(data))
         (STATE / "secrets.json").chmod(0o600)
@@ -365,10 +413,12 @@ def bootstrap_compose():
         "ROOT_ACCESS_KEY": "loco-demo", "ROOT_SECRET_KEY": "loco-demo-source-key",
         "VGW_REGION": "us-east-1", "VGW_PORT": ":9000", "SOURCE_BUCKET": "loco-demo-sources"}
     api_env = {
-        "DATABASE_URL": f"postgresql://loco_demo:{c['database']}@postgres:5432/loco_demo?sslmode=disable",
+        "DATABASE_URL": f"postgresql://loco_demo:{c['database']}@loco-demo-postgres:5432/loco_demo?sslmode=disable",
         "APP_PORT": "0.0.0.0:8000", "APP_ENV": "test", "LOG_LEVEL": "debug",
         "DEFAULT_PLATFORM_DOMAIN": "demo.test.local",
         "AUTH_ISSUERS": json.dumps([{"issuer": "http://loco-demo-dex:5556/dex", "audience": "loco"}]),
+        "LOCO_AGENT_CONNECTION_SECRETS": c["agent"],
+        "OBSERVABILITY_PROXY_URL": "http://127.0.0.1:8081",
         "LOCO_REGISTRY_HOST": "loco-demo-registry:5000",
         "LOCO_REGISTRY_URL": "http://loco-demo-registry:5000",
         "LOCO_REGISTRY_USERNAME": "api", "LOCO_REGISTRY_PASSWORD": "loco-dev-api",
@@ -377,12 +427,8 @@ def bootstrap_compose():
         "LOCO_SOURCE_BUCKET_REGION": "us-east-1", "LOCO_SOURCE_BUCKET_FORCE_PATH_STYLE": "true",
         "LOCO_SECRETS_KEY_PROVIDER": "local", "LOCO_SECRETS_LOCAL_KEYS": "demo:" + c["secretkey"],
     }
-    services["api"] = {
-        "image": VERSIONS["loco"]["images"]["api"], "container_name": "loco-demo-api",
-        "environment": api_env, "ports": [f"127.0.0.1:{CLI_PORT}:8000"],
-        "networks": {"default": {}, "kind": {"aliases": ["loco-demo-api"]}},
-        "depends_on": {"postgres": {"condition": "service_healthy"}},
-    }
+    (STATE / "api-env.json").write_text(json.dumps(api_env))
+    (STATE / "api-env.json").chmod(0o600)
     dex = yaml.safe_load((CORE / "env/conformance/dex.yaml").read_text())
     dex["issuer"] = "http://loco-demo-dex:5556/dex"
     dex["staticPasswords"][0]["email"] = "demo@example.test"
@@ -398,9 +444,7 @@ def bootstrap_compose():
     write_yaml(STATE / "compose.yaml", {
         "services": services, "volumes": {"postgres-data": {}, "registry-data": {}, "s3-data": {}},
         "networks": {"kind": {"external": True}}})
-    compose("up", "-d", "postgres", "registry", "s3", "dex", "api", timeout=READY_SECONDS)
-    wait_for("API migrations and health", lambda: urllib.request.urlopen(
-        f"http://127.0.0.1:{CLI_PORT}/health", timeout=5).status == 200)
+    compose("up", "-d", "postgres", "registry", "s3", "dex", timeout=READY_SECONDS)
     wait_for("OIDC provider", lambda: urllib.request.urlopen(
         f"http://127.0.0.1:{DEX_PORT}/dex/.well-known/openid-configuration", timeout=5).status == 200)
 
@@ -448,26 +492,26 @@ def create_identity():
     data = {"userId": current_user["id"], "orgId": org_id, "workspaceId": ws_id, "environmentId": env_id}
     (STATE / "identity.json").write_text(json.dumps(data))
     (STATE / "cli/credentials.json").write_text(json.dumps({
-        "Host": "http://loco-demo-api:8000", "Token": c["session"],
-        "ExpiresAt": (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(tokens["expiresIn"]))).isoformat(),
-        "RefreshToken": c["refresh"]}))
-    (STATE / "cli/config.toml").write_text(f"""currentScope = "default"
-[scopes.default.organization]
-name = "demo"
-id = "{org_id}"
-[scopes.default.workspace]
-name = "astronomy-shop"
-id = "{ws_id}"
-""")
+        "host": cli_api_url(), "token": c["session"],
+        "expiresAt": (dt.datetime.now(dt.UTC) + dt.timedelta(seconds=int(tokens["expiresIn"]))).isoformat(),
+        "refreshToken": c["refresh"]}))
+    write_yaml(STATE / "cli/config.yaml", {
+        "locoHost": cli_api_url(), "currentScope": "default", "scopes": {"default": {
+            "organization": {"name": "demo", "id": org_id},
+            "workspace": {"name": "astronomy-shop", "id": ws_id},
+        }},
+    })
+    (STATE / "cli/config.yaml").chmod(0o600)
+    (STATE / "cli/credentials.json").chmod(0o600)
+    c["telemetry"] = api("loco.token.v1.TokenService/CreateToken", {
+        "name": "demo-observability", "entityType": "ENTITY_TYPE_WORKSPACE", "entityId": ws_id,
+        "scopes": [{"scope": "SCOPE_READ", "entityType": "ENTITY_TYPE_WORKSPACE", "entityId": ws_id}],
+        "expiresInSec": 86400,
+    })["token"]
+    (STATE / "secrets.json").write_text(json.dumps(c))
     (OUT / "identity-api.json").write_text(json.dumps(data, indent=2) + "\n")
     print("OIDC login, CLI token exchange, organization and workspace API calls passed", flush=True)
 
-
-def require_cluster_enrollment():
-    raise PublicAPIGap(
-        "The pinned release has no public cluster enrollment or agent credential issuance API. "
-        "AgentService/Register authenticates an already-enrolled cluster. Fresh setup stops here.",
-        KNOWN["enrollment"])
 
 
 def secret(namespace, name, values, secret_type="Opaque"):
@@ -477,7 +521,7 @@ def secret(namespace, name, values, secret_type="Opaque"):
 
 def setup_external_hosts():
     addresses = {}
-    for name in ["api", "registry", "s3"]:
+    for name in ["postgres", "registry", "s3", "dex"]:
         addresses["loco-demo-" + name] = run([
             "docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
             "loco-demo-" + name]).strip()
@@ -501,13 +545,86 @@ def image_values(image):
     return {"repository": repository, "tag": tag}
 
 
+def control_plane_documents():
+    labels = {"app": "loco-demo-control-plane"}
+    security = {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}
+    containers = []
+    for name, image, port, env_secret, health, readiness in [
+        ("api", "api", 8000, "loco-demo-api-env", "/health", "/health"),
+        ("observability", "obs-proxy", 8081, "loco-demo-observability-env", "/healthz", "/readyz"),
+    ]:
+        containers.append({
+            "name": name, "image": VERSIONS["loco"]["images"][image],
+            "securityContext": security,
+            "envFrom": [{"secretRef": {"name": env_secret}}],
+            "ports": [{"containerPort": port}],
+            "livenessProbe": {"httpGet": {"path": health, "port": port}, "initialDelaySeconds": 10},
+            "readinessProbe": {"httpGet": {"path": readiness, "port": port}},
+            "resources": {"requests": {"cpu": "100m", "memory": "128Mi"},
+                          "limits": {"cpu": "1", "memory": "512Mi"}},
+        })
+    metadata = {"name": "loco-demo-api", "namespace": API_NAMESPACE}
+    return [
+        {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
+         "spec": {"replicas": 1, "selector": {"matchLabels": labels},
+                  "template": {"metadata": {"labels": labels}, "spec": {
+                      "automountServiceAccountToken": False,
+                      "securityContext": {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}},
+                      "containers": containers}}}},
+        {"apiVersion": "v1", "kind": "Service", "metadata": metadata,
+         "spec": {"type": "NodePort", "selector": labels,
+                  "ports": [{"port": 8000, "targetPort": 8000, "nodePort": API_NODE_PORT}]}},
+        {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": metadata,
+         "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
+                  "ingress": [{"ports": [{"protocol": "TCP", "port": 8000}]}]}},
+    ]
+
+
+def install_control_plane():
+    c = credentials()
+    secret(API_NAMESPACE, "loco-demo-api-env", json.loads((STATE / "api-env.json").read_text()))
+    host = "clickhouse-loco-obs-clickhouse.observability.svc.cluster.local:9000"
+    secret(API_NAMESPACE, "loco-demo-observability-env", {
+        "PORT": "8081", "CONTROL_PLANE_URL": "http://127.0.0.1:8000",
+        "CLICKHOUSE_URL": f"clickhouse://loco_reader:{c['reader']}@{host}/loco_obs",
+        "CLICKHOUSE_MIGRATOR_URL": f"clickhouse://loco_migrator:{c['migrator']}@{host}/loco_obs",
+        "CLICKHOUSE_DB": "loco_obs",
+    })
+    apply(control_plane_documents())
+    kube("-n", API_NAMESPACE, "rollout", "status", "deployment/loco-demo-api", "--timeout=600s")
+    node_ip = run(["docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
+                   CLUSTER + "-control-plane"]).strip()
+    (STATE / "endpoint.json").write_text(json.dumps({"cliApiUrl": f"http://{node_ip}:{API_NODE_PORT}"}))
+    wait_for("regional control-plane API", lambda: urllib.request.urlopen(
+        f"http://127.0.0.1:{CLI_PORT}/health", timeout=5).status == 200)
+
+
+def check_attachment():
+    key = json.loads(kube("get", "namespace", "kube-system", "-o", "json"))["metadata"]["uid"]
+    wait_for("automatically attached healthy cluster", lambda: any(
+        region.get("region") == REGION and region.get("healthStatus") == "healthy"
+        for region in api("loco.resource.v1.ResourceService/ListRegions", {}).get("regions", [])))
+    (OUT / "cluster-attachment.json").write_text(json.dumps({
+        "clusterKey": key, "region": REGION, "credentialSource": "operator-shared-secret",
+        "discovery": "ResourceService/ListRegions", "healthStatus": "healthy",
+    }, indent=2) + "\n")
+
+
 def up():
+    global INFRA_STARTED
     prepare()
+    require_release_contracts()
     validate()
     STATE.mkdir(exist_ok=True)
     clusters = run(["kind", "get", "clusters"]).splitlines()
     if CLUSTER in clusters:
         raise RuntimeError("loco-demo already exists. Reuse it with deploy/verify, or run mise run down before up.")
+    containers = set(run(["docker", "ps", "-a", "--format", "{{.Names}}"]).splitlines())
+    collisions = containers.intersection(PROJECT + "-" + name for name in ["postgres", "registry", "s3", "dex"])
+    if collisions:
+        raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
+    write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
+    INFRA_STARTED = True
     run(["kind", "create", "cluster", "--name", CLUSTER, "--image", VERSIONS["kindImage"],
          "--config", ROOT / "config/kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
         timeout=READY_SECONDS, log=OUT / "kind.log")
@@ -516,8 +633,6 @@ def up():
     for ns in ["loco-system", "observability", "observability-node"]:
         apply({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}})
     bootstrap_compose()
-    create_identity()
-    require_cluster_enrollment()
     addresses = setup_external_hosts()
     c = credentials()
     for name, user, password in [("loco-demo-pull", "nodes", "loco-dev-nodes"),
@@ -535,25 +650,22 @@ def up():
                  "-f", ROOT / "config/operator.yaml", "-f", STATE / "operator.yaml")
     helm_install("cert-manager", "jetstack/cert-manager", "cert-manager",
                  "--version", VERSIONS["certManagerChart"], "--set", "crds.enabled=true")
-    core = {"agent": {"image": image_values(VERSIONS["loco"]["images"]["agent"])},
-            "env": {"CONTROL_PLANE_URL": "http://loco-demo-api:8000", "AGENT_TOKEN": c["agent"]}}
+    obs = {"global": {"region": REGION},
+           "clickhouseUserPasswords": {"loco_migrator": c["migrator"],
+                                      "loco_ingest": c["ingest"], "loco_reader": c["reader"]}}
+    write_yaml(STATE / "observability.yaml", obs)
+    helm_install("loco-obs", CORE / "charts/loco-obs", API_NAMESPACE,
+                 "-f", ROOT / "config/observability.yaml", "-f", STATE / "observability.yaml")
+    install_control_plane()
+    create_identity()
+    core = {"agent": {"image": image_values(VERSIONS["loco"]["images"]["agent"]),
+                      "clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production"},
+            "env": {"CONTROL_PLANE_URL": f"http://loco-demo-api.{API_NAMESPACE}.svc.cluster.local:8000",
+                    "AGENT_TOKEN": c["agent"]}}
     write_yaml(STATE / "core.yaml", core)
     helm_install("loco-core", CORE / "charts/loco-core", "loco-system",
                  "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml")
-    wait_for("registered, healthy demo agent", lambda: any(
-        r.get("region") == "us-east-1" and r.get("healthStatus") == "healthy"
-        for r in api("loco.resource.v1.ResourceService/ListRegions", {}).get("regions", [])))
-    token = api("loco.token.v1.TokenService/CreateToken", {
-        "name": "demo-observability", "entityType": "ENTITY_TYPE_WORKSPACE", "entityId": workspace_id(),
-        "scopes": [{"scope": "SCOPE_READ", "entityType": "ENTITY_TYPE_WORKSPACE", "entityId": workspace_id()}],
-        "expiresInSec": 86400})["token"]
-    secret("observability", "loco-demo-proxy-auth", {"token": token})
-    obs = {"clickhouseUserPasswords": {"loco_migrator": c["migrator"],
-                                      "loco_ingest": c["ingest"], "loco_reader": c["reader"]},
-           "obsProxy": {"image": image_values(VERSIONS["loco"]["images"]["obs-proxy"]) }}
-    write_yaml(STATE / "observability.yaml", obs)
-    helm_install("loco-obs", CORE / "charts/loco-obs", "observability",
-                 "-f", ROOT / "config/observability.yaml", "-f", STATE / "observability.yaml")
+    check_attachment()
     helm_install("astronomy", CACHE / "charts/opentelemetry-demo", app_namespace(),
                  "-f", ROOT / "config/demo-infrastructure.yaml")
     print("Demo organization, workspace, user, builder worker, Loco charts, and shop infrastructure ready", flush=True)
@@ -585,7 +697,11 @@ def provision():
 
 def deploy_one(name, resources):
     stage_app(name, resources)
-    output = cli("deploy", "--file", f".state/work/{name}/loco.yaml",
+    image_args = []
+    if APPS[name]["mode"] == "image":
+        image = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())["services"][name]["image"]
+        image_args = ["--image", image]
+    output = cli("deploy", "--file", f".state/work/{name}/loco.yaml", *image_args,
                  "--yes", "--confirm-import", "--env", "production",
                  timeout=BUILD_SECONDS, log=OUT / f"deploy-{name}.log")
     if APPS[name]["mode"] == "source":
@@ -651,6 +767,8 @@ def check_builds(resources):
 
 def traffic():
     resources = json.loads((STATE / "resources.json").read_text())
+    baseline, _ = payment_counter()
+    (STATE / "metric-baseline.json").write_text(json.dumps({"value": baseline}))
     trace_id = secrets.token_hex(16)
     user_id = "demo-" + uuid.uuid4().hex
     (STATE / "trace.json").write_text(json.dumps({"traceId": trace_id, "userId": user_id}))
@@ -695,14 +813,19 @@ def query_logs(resource_ids):
     now = dt.datetime.now(dt.UTC)
     request = {"workspaceId": workspace_id(), "resourceIds": resource_ids,
                "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
+               "labels": {"loco.environment.id": identity()["environmentId"]},
                "limit": 200, "order": "LOG_ORDER_NEWEST_FIRST"}
     entries = []
+    seen = set()
     while True:
         response = observability_rpc("QueryLogs", request)
         entries.extend(response.get("entries", []))
         cursor = response.get("nextCursor")
         if not cursor:
             return entries
+        if cursor in seen:
+            raise RuntimeError("QueryLogs repeated pagination cursor")
+        seen.add(cursor)
         request["cursor"] = cursor
 
 
@@ -723,30 +846,127 @@ def check_logs():
     return "QueryLogs returns the checkout order with the requested resource scope"
 
 
-def check_metrics():
+def payment_counter():
     resources = json.loads((STATE / "resources.json").read_text())
+    now = dt.datetime.now(dt.UTC)
+    response = observability_rpc("QueryMetrics", {
+        "workspaceId": workspace_id(), "resourceIds": [resources["payment"]],
+        "environmentId": identity()["environmentId"], "metricName": "demo.payment.transactions",
+        "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
+        "intervalSeconds": 60, "aggregation": "max"})
+    series = response.get("series", [])
+    if any(s["resourceId"] != resources["payment"] for s in series):
+        raise RuntimeError("QueryMetrics returned a resource outside the requested scope")
+    values = [float(point["value"]) for item in series for point in item.get("points", [])]
+    if any(not math.isfinite(value) or value < 0 for value in values):
+        raise RuntimeError("QueryMetrics returned an invalid payment counter value")
+    return max(values, default=0), response
+
+
+def check_metrics():
+    baseline = json.loads((STATE / "metric-baseline.json").read_text())["value"]
     def observed():
-        now = dt.datetime.now(dt.UTC)
-        response = observability_rpc("QueryMetrics", {
-            "workspaceId": workspace_id(), "resourceIds": [resources["payment"]],
-            "environmentId": identity()["environmentId"], "metricName": "demo.payment.transactions",
-            "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
-            "intervalSeconds": 60, "aggregation": "max"})
-        series = response.get("series", [])
-        if any(s["resourceId"] != resources["payment"] for s in series):
-            raise RuntimeError("QueryMetrics returned a resource outside the requested scope")
-        found = any(float(p["value"]) > 0 for s in series for p in s.get("points", []))
-        if found:
-            (OUT / "metrics-api.json").write_text(json.dumps(response, indent=2) + "\n")
-        return found
-    wait_for("payment transaction counter through QueryMetrics", observed, TELEMETRY_SECONDS)
-    return "QueryMetrics returns payment counter points in the demo environment"
+        value, response = payment_counter()
+        if value <= baseline:
+            return False
+        (OUT / "metrics-api.json").write_text(json.dumps({
+            "baseline": baseline, "observed": value, "response": response,
+        }, indent=2) + "\n")
+        return True
+    wait_for("payment counter increase through QueryMetrics", observed, TELEMETRY_SECONDS)
+    return "QueryMetrics reports a payment counter increase after the checkout"
+
+
+def query_trace(trace_id, resource_ids):
+    now = dt.datetime.now(dt.UTC)
+    request = {"workspaceId": workspace_id(), "resourceIds": resource_ids,
+               "environmentId": identity()["environmentId"], "traceId": trace_id,
+               "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
+               "limit": 200}
+    spans = []
+    seen = set()
+    while True:
+        response = observability_rpc("QueryTraces", request)
+        spans.extend(response.get("spans", []))
+        cursor = response.get("nextCursor")
+        if not cursor:
+            return spans
+        if cursor in seen:
+            raise RuntimeError("QueryTraces repeated pagination cursor")
+        seen.add(cursor)
+        request["cursor"] = cursor
+
+
+def connected_checkout_trace(spans, trace_id, resources):
+    allowed = set(resources.values())
+    expected_workspace = workspace_id()
+    expected_environment = identity()["environmentId"]
+    by_id = {}
+    for span in spans:
+        if (span.get("traceId") != trace_id or span.get("resourceId") not in allowed
+                or span.get("workspaceId") != expected_workspace
+                or span.get("environmentId") != expected_environment
+                or span.get("resourceAttributes", {}).get("loco.region") != REGION):
+            raise RuntimeError("QueryTraces returned a span outside the requested trace or tenant scope")
+        span_id = span.get("spanId", "")
+        if not re.fullmatch(r"[0-9a-f]{16}", span_id) or span_id == "0" * 16:
+            raise RuntimeError("QueryTraces returned an invalid span ID")
+        signature = (span.get("parentSpanId", ""), span["resourceId"])
+        if span_id in by_id and by_id[span_id] != signature:
+            raise RuntimeError("QueryTraces returned conflicting duplicate span IDs")
+        by_id[span_id] = signature
+    required = {resources[name] for name in ["frontend", "checkout", "payment", "shipping", "product-catalog"]}
+    neighbors = {span_id: set() for span_id in by_id}
+    for span_id, (parent, _) in by_id.items():
+        if parent in by_id:
+            neighbors[span_id].add(parent)
+            neighbors[parent].add(span_id)
+    for anchor, (_, resource) in by_id.items():
+        if resource != resources["checkout"]:
+            continue
+        reached, pending = set(), [anchor]
+        while pending:
+            current = pending.pop()
+            if current in reached:
+                continue
+            reached.add(current)
+            pending.extend(neighbors[current] - reached)
+        if required <= {by_id[span_id][1] for span_id in reached}:
+            return True
+    return False
 
 
 def check_traces():
-    raise PublicAPIGap("The pinned ObservabilityProxyService exposes no trace-query API; "
-                       "connected distributed traces cannot be verified through the public interface",
-                       KNOWN["trace-api"])
+    resources = json.loads((STATE / "resources.json").read_text())
+    trace_id = json.loads((STATE / "trace.json").read_text())["traceId"]
+    def observed():
+        spans = query_trace(trace_id, list(resources.values()))
+        if not connected_checkout_trace(spans, trace_id, resources):
+            return False
+        (OUT / "traces-api.json").write_text(json.dumps({"traceId": trace_id, "spans": spans}, indent=2) + "\n")
+        return True
+    wait_for("connected checkout trace through QueryTraces", observed, TELEMETRY_SECONDS)
+    return "QueryTraces links frontend, checkout, payment, shipping and product-catalog spans by parent IDs"
+
+
+def check_observability_scope():
+    other_workspace = api("loco.workspace.v1.WorkspaceService/CreateWorkspace", {
+        "orgId": identity()["orgId"], "name": "telemetry-isolation-" + secrets.token_hex(4),
+    })["workspaceId"]
+    now = dt.datetime.now(dt.UTC)
+    for method in ["QueryLogs", "QueryMetrics", "QueryTraces"]:
+        request = {"workspaceId": other_workspace,
+                   "startTime": (now - dt.timedelta(minutes=1)).isoformat(), "endTime": now.isoformat()}
+        if method == "QueryMetrics":
+            request.update({"metricName": "demo.payment.transactions", "intervalSeconds": 60, "aggregation": "max"})
+        try:
+            observability_rpc(method, request)
+        except RPCError as exc:
+            if exc.code != "permission_denied" or exc.status != 403:
+                raise RuntimeError(f"{method} did not enforce workspace authorization: {exc}") from exc
+        else:
+            raise RuntimeError(f"{method} allowed a token scoped to another workspace")
+    return "Regional API rejects all three telemetry queries for a workspace outside the issued token scope"
 
 
 def check_kafka():
@@ -763,6 +983,7 @@ def verify():
     for name, resource_id in resources.items():
         record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid), KNOWN["health"])
     record("build-matrix", lambda: check_builds(resources))
+    record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
         record("logs-api", check_logs)
         record("metrics-api", check_metrics, KNOWN["metrics-api"])
@@ -778,6 +999,8 @@ def verify():
 
 def diagnostics():
     OUT.mkdir(exist_ok=True)
+    if not owns_infrastructure():
+        return
     if (STATE / "kubeconfig").exists():
         for args, name in [
             (["get", "pods", "-A", "-o", "wide"], "pods"),
@@ -789,7 +1012,7 @@ def diagnostics():
                 kube(*args, check=False, timeout=30, log=OUT / (name + ".log"))
             except Exception:
                 pass
-        for ns in ["loco-system", "observability", "loco-builds"] + ([app_namespace()] if (STATE / "identity.json").exists() else []):
+        for ns in ["loco-system", API_NAMESPACE, "loco-builds"] + ([app_namespace()] if (STATE / "identity.json").exists() else []):
             try:
                 items = json.loads(kube("-n", ns, "get", "pods", "-o", "json"))["items"]
                 for pod in items:
@@ -862,7 +1085,15 @@ Local evidence is in `artifacts/evidence.md` and the per-step logs. CI retains t
         print(run(["gh", "issue", "create", "-R", "team-loco/loco", "--title", marker, "--body-file", body]))
 
 
+def owns_infrastructure():
+    owner = STATE / "owner.yaml"
+    return owner.exists() and yaml.safe_load(owner.read_text()) == {"root": str(ROOT)}
+
+
 def down():
+    if not owns_infrastructure():
+        print("No infrastructure owned by this checkout; nothing to remove", flush=True)
+        return
     if (STATE / "compose.yaml").exists():
         compose("down", "--volumes", "--remove-orphans", check=False, timeout=120)
     run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], check=False, timeout=120)
@@ -871,6 +1102,7 @@ def down():
 
 
 def main():
+    global INFRA_STARTED
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["prepare", "validate", "up", "deploy", "verify", "e2e", "down", "report"])
     parser.add_argument("services", nargs="*", choices=list(APPS))
@@ -880,6 +1112,7 @@ def main():
     if args.services and args.command != "deploy":
         parser.error("Service selection is supported by deploy; e2e always tests all 16 apps")
     if args.command == "e2e":
+        INFRA_STARTED = False
         success = False
         try:
             if record("bootstrap", up):
@@ -891,7 +1124,7 @@ def main():
             save_report()
             if args.report_issues:
                 report()
-            if not args.keep:
+            if not args.keep and INFRA_STARTED:
                 down()
         return 0 if success else 1
     if args.command == "deploy":
