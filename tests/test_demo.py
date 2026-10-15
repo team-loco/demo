@@ -284,6 +284,13 @@ class PublicTelemetryTests(unittest.TestCase):
                                      {**request, "regions": [demo.REGION]}, token="api-issued-workspace-token")
         self.assertNotIn("regions", request)
 
+    def test_metric_and_trace_requests_use_their_actual_region_contracts(self):
+        with patch.object(demo, "api", return_value={}) as call:
+            demo.observability_rpc("QueryMetrics", {"workspaceId": "workspace"}, token="issued-token")
+            self.assertEqual(call.call_args.args[1], {"workspaceId": "workspace", "region": demo.REGION})
+            demo.observability_rpc("QueryTraces", {"workspaceId": "workspace"}, token="issued-token")
+            self.assertEqual(call.call_args.args[1], {"workspaceId": "workspace"})
+
     def test_trace_requires_real_parent_connections_between_services(self):
         with patch.object(demo, "workspace_id", return_value="workspace"), \
              patch.object(demo, "identity", return_value={"environmentId": "environment"}):
@@ -370,6 +377,15 @@ class PublicTelemetryTests(unittest.TestCase):
 
 
 class BootstrapContractTests(unittest.TestCase):
+    def test_failed_bootstrap_does_not_clean_up_an_existing_owned_cluster(self):
+        with patch.object(demo.sys, "argv", ["demo.py", "e2e"]), \
+             patch.object(demo, "record", return_value=False), \
+             patch.object(demo, "RESULTS", []), \
+             patch.object(demo, "diagnostics"), patch.object(demo, "save_report"), \
+             patch.object(demo, "down") as down:
+            self.assertEqual(demo.main(), 1)
+            down.assert_not_called()
+
     def test_failed_preflight_cleanup_preserves_existing_infrastructure(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "STATE", Path(tmp)), \
              patch.object(demo, "run") as run, patch.object(demo, "compose") as compose:
