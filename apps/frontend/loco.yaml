@@ -9,6 +9,7 @@ services:
       CHECKOUT_ADDR: checkout:5050
       CURRENCY_ADDR: currency:7001
       ENV_PLATFORM: loco
+      HOSTNAME: 0.0.0.0
       FLAGD_HOST: flagd
       FLAGD_PORT: '8013'
       FRONTEND_ADDR: frontend:8080

@@ -74,6 +74,8 @@ The retained upstream sources are in [`upstream/`](upstream/). Source contexts a
 
 ## Keep an installation or run individual phases
 
+The application services use private Loco addresses. The frontend binds to all container interfaces for local port forwarding; the frontend proxy does not request a public domain during this isolated test.
+
 The runner creates its own `loco-demo` kind cluster and does not use your current Kubernetes context. It refuses an existing cluster or conflicting container names. A normal E2E run deletes infrastructure owned by this checkout on exit.
 
 To retain the installation for inspection:

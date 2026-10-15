@@ -1114,12 +1114,12 @@ def check_kafka():
 def verify():
     resources = json.loads((STATE / "resources.json").read_text())
     for name, resource_id in resources.items():
-        record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid), KNOWN["health"])
+        record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid))
     record("build-matrix", lambda: check_builds(resources))
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
         record("logs-api", check_logs)
-        record("metrics-api", check_metrics, KNOWN["metrics-api"])
+        record("metrics-api", check_metrics)
         record("traces-api", check_traces)
         record("kafka-consumers", check_kafka)
     else:

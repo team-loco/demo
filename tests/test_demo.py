@@ -483,6 +483,24 @@ class BootstrapContractTests(unittest.TestCase):
         kube.assert_called_once_with("get", "namespace", "kube-system", "-o", "json")
 
 
+class FailureClassificationTests(unittest.TestCase):
+    def test_runtime_failures_are_not_assigned_to_old_product_issues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
+            with patch.object(demo, "STATE", directory), patch.object(demo, "OUT", directory), \
+                 patch.object(demo, "RESULTS", []), \
+                 patch.object(demo, "check_resource", side_effect=RuntimeError("CreateContainerConfigError")), \
+                 patch.object(demo, "check_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
+                 patch.object(demo, "traffic", return_value="checked"), patch.object(demo, "check_logs", return_value="checked"), \
+                 patch.object(demo, "check_metrics", side_effect=RuntimeError("token expired")), \
+                 patch.object(demo, "check_traces", return_value="checked"), patch.object(demo, "check_kafka", return_value="checked"):
+                self.assertFalse(demo.verify())
+                failures = [result for result in demo.RESULTS if result["status"] == "FAIL"]
+                self.assertEqual([result["name"] for result in failures], ["health:payment", "metrics-api"])
+                self.assertTrue(all(result.get("issue") is None for result in failures))
+
+
 class LocalCertificateTests(unittest.TestCase):
     def manifests(self):
         before = [
