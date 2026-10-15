@@ -2,6 +2,8 @@ version: 1
 partial: quote
 services:
   quote:
+    runAsUser: 82
+    runAsGroup: 82
     port: 8090
     env:
       IPV6_ENABLED: 'false'
