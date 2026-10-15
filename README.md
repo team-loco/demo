@@ -30,7 +30,7 @@ mise run e2e
 
 `setup` installs pinned tools and Python dependencies and prepares the upstream sources and Loco release artifacts. `test` runs the runner's unit tests. `validate` checks the application configurations and rendered infrastructure. `e2e` provisions the local installation and runs the complete deployment and observability test.
 
-**Current status:** the runner pins published Loco v0.0.111 CLI binaries and six published platform images from commit `c34dc6c9`. Control-plane chart adoption is awaiting [Loco #755](https://github.com/team-loco/loco/pull/755), which adds the supported Gateway Service configuration needed for local NodePort access. The preflight rejects a chart without that setting; the complete 16-service E2E has not passed.
+**Current status:** the runner pins published Loco v0.0.112 CLI binaries and six matching platform images from commit `5efe322d`. This includes local Gateway Service configuration and numeric runtime user support. Setup and chart/application configuration checks pass; the complete 16-service E2E has not passed.
 
 The pinned platform images include Linux AMD64 and ARM64 manifests. GitHub Actions uses an AMD64 runner. A native Apple Silicon run also requires compatible application images.
 
