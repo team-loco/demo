@@ -98,6 +98,57 @@ class DeploymentContractTests(unittest.TestCase):
 
 
 class HarnessTests(unittest.TestCase):
+    def release_cache(self, directory):
+        origin = directory / "origin"
+        cache = directory / "cache"
+        origin.mkdir()
+        def git(*args, cwd=origin):
+            result = subprocess.run(
+                ["git", "-c", "user.name=Demo Test", "-c", "user.email=demo@example.test", *args],
+                cwd=cwd, text=True, capture_output=True, check=True)
+            return result.stdout.strip()
+        git("init", "--initial-branch=main")
+        (origin / "release.txt").write_text("old release")
+        git("add", "release.txt")
+        git("commit", "-m", "old release")
+        git("tag", "v1")
+        old = git("rev-parse", "HEAD")
+        git("clone", "--branch", "v1", str(origin), str(cache))
+        (origin / "release.txt").write_text("new release")
+        git("commit", "-am", "new release")
+        git("tag", "-a", "v2", "-m", "new release")
+        return cache, old, git("rev-parse", "HEAD")
+
+    def test_prepare_refreshes_an_old_release_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, _, current = self.release_cache(Path(tmp))
+            (cache / "local-note.txt").write_text("keep this")
+            demo.checkout("unused/repository", "v2", current, cache)
+            self.assertEqual((cache / "release.txt").read_text(), "new release")
+            self.assertEqual((cache / "local-note.txt").read_text(), "keep this")
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cache, text=True).strip()
+            self.assertEqual(head, current)
+            demo.checkout("unused/repository", "v2", current, cache)
+
+    def test_wrong_release_pin_leaves_the_cached_checkout_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, old, _ = self.release_cache(Path(tmp))
+            with self.assertRaisesRegex(RuntimeError, "expected .* got"):
+                demo.checkout("unused/repository", "v2", "0" * 40, cache)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cache, text=True).strip()
+            self.assertEqual(head, old)
+            self.assertEqual((cache / "release.txt").read_text(), "old release")
+
+    def test_refresh_preserves_conflicting_local_edits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, old, current = self.release_cache(Path(tmp))
+            (cache / "release.txt").write_text("local changes")
+            with self.assertRaises(RuntimeError):
+                demo.checkout("unused/repository", "v2", current, cache)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cache, text=True).strip()
+            self.assertEqual(head, old)
+            self.assertEqual((cache / "release.txt").read_text(), "local changes")
+
     def test_identity_and_cli_credentials_come_from_public_api_responses(self):
         responses = {
             "WhoAmI": {"user": {"id": "user-from-api"}},
