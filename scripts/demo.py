@@ -338,7 +338,12 @@ def checkout(repository, tag, commit, dest):
              f"https://github.com/{repository}.git", dest])
     actual = run(["git", "rev-parse", "HEAD"], cwd=dest).strip()
     if actual != commit:
-        raise RuntimeError(f"{dest}: expected {commit}, got {actual}; remove this cache before preparing")
+        print(f"Updating cached {repository} checkout to {tag}", flush=True)
+        run(["git", "fetch", "--depth", "1", "origin", f"refs/tags/{tag}"], cwd=dest)
+        fetched = run(["git", "rev-parse", "FETCH_HEAD^{commit}"], cwd=dest).strip()
+        if fetched != commit:
+            raise RuntimeError(f"{dest}: expected {commit}, got {fetched} for {tag}")
+        run(["git", "checkout", "--detach", commit], cwd=dest)
 
 
 def prepare():
