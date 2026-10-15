@@ -1,16 +1,26 @@
-# demo
+# Loco Demo
 
-e2e deployment and observability tests for loco.
+The Loco implementation of the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo): Astronomy Shop, deployed and observed through [Loco](https://github.com/team-loco/loco).
 
-The test uses released Loco binaries, Helm charts, and public APIs. It creates a local OIDC identity, obtains CLI credentials through Loco's login APIs, creates the demo organization/workspace, deploys shop apps, and checks builds and observability through the APIs. The harness never seeds Loco's database or queries application/telemetry databases directly.
+Astronomy Shop is a microservices application where users browse products, add items to a cart, and place orders. This repository brings 16 of its services to Loco, with a `loco.yaml` for each service and an end-to-end test that exercises deployment, checkout, and telemetry through Loco's public APIs.
 
-Fresh installation is currently blocked by [cluster enrollment](https://github.com/team-loco/loco/issues/719). The pinned release has no public API to create a cluster and issue an agent credential. The E2E stops at that boundary and exits nonzero. Application deployment and telemetry checks remain unverified; missing APIs never count as passing tests.
+Use it to see how a multi-service application fits together on Loco, explore its deployment configuration, or test Loco against a complete application.
 
-## Run
+## What Loco provides
 
-Install [mise](https://mise.jdx.dev/) and start Docker. The pinned Loco platform images require Linux AMD64; native Apple Silicon is blocked by [loco#716](https://github.com/team-loco/loco/issues/716). GitHub Actions uses an AMD64 runner.
+Loco builds and deploys the application services, connects them within a workspace, and collects their logs, metrics, and distributed traces. The demo exercises both source builds on cluster workers and deployments of prebuilt images.
+
+The application code and instrumentation come from OpenTelemetry's Astronomy Shop. Kafka, Postgres, Valkey, and feature flags come from the upstream demo chart. Loco supplies the application deployment and observability infrastructure; the upstream chart's application workloads and telemetry backends are disabled.
+
+The test runs a local Loco installation alongside the shop. It creates a demo user and workspace, deploys the services, generates shopping traffic, and checks the results through the same APIs available to Loco clients. It does not seed Loco's database or query application or telemetry databases directly.
+
+## Run locally
+
+Install [mise](https://mise.jdx.dev/) and start Docker, then run:
 
 ```sh
+git clone https://github.com/team-loco/demo.git
+cd demo
 mise trust
 mise run setup
 mise run test
@@ -18,37 +28,36 @@ mise run validate
 mise run e2e
 ```
 
-The runner creates its own `loco-demo` kind cluster and deletes it on exit. It never uses the current kube context. `artifacts/` holds sanitized diagnostics and API evidence; ignored `.state/` holds runtime credentials and identifiers. The downloaded CLI runs in a container with its own credential store.
+`setup` installs pinned tools and Python dependencies and prepares the upstream sources and Loco release artifacts. `test` runs the runner's unit tests. `validate` checks the application configurations and rendered infrastructure. `e2e` provisions the local installation and runs the complete deployment and observability test.
 
-```sh
-mise run e2e -- --keep
-mise run down
-```
+**Current status:** the pinned Loco release is v0.0.103, which predates the automatic cluster attachment and regional observability APIs used by this runner. The E2E preflight currently exits nonzero before creating infrastructure. A compatible published release and a successful full run are still required. Unit and configuration checks can run independently.
 
-`mise run up`, `mise run deploy`, and `mise run verify` expose the individual phases. `deploy` accepts service names to repeat selected deployments after bootstrap is available. The complete E2E always tests the whole matrix.
+The pinned platform images require Linux AMD64. GitHub Actions uses an AMD64 runner; native Apple Silicon support also requires updated platform images and compatible application images.
 
-## Public interface checks
+## What the test checks
 
-| Operation | Interface |
+| Area | Check |
 | --- | --- |
-| Authenticate demo user | Local Dex OIDC provider, `UserService/WhoAmI` |
-| Obtain CLI session | `AuthService/ApproveCLILogin` and `ExchangeCLICode` with PKCE |
-| Create organization/workspace/environment | `OrgService`, `WorkspaceService`, `EnvironmentService` |
-| Discover resource IDs and configure deployments | `ResourceService` and `loco deploy` |
-| Verify source/prebuilt build matrix | `BuildService/ListBuilds` and `GetBuild` |
-| Verify resource health | `ResourceService/GetResource` |
-| Find observability endpoint | `ObservabilityAccessService/GetObservabilityAccess` |
-| Verify scoped logs and Kafka consumption | `ObservabilityProxyService/QueryLogs` |
-| Verify payment transaction counter | `ObservabilityProxyService/QueryMetrics` |
-| Verify connected traces | Blocked: [trace-query API missing](https://github.com/team-loco/loco/issues/720) |
+| Authentication | Sign in a demo user through local Dex OIDC and obtain CLI credentials through Loco's login APIs. |
+| Cluster attachment | Attach the worker cluster using an operator-provided shared secret and its Kubernetes identity. |
+| Builds and deployments | Deploy all 16 services, verify eight source builds and eight prebuilt deployments, and check resource health. |
+| Application behavior | Browse the shop, populate a cart, complete checkout, and observe Kafka consumption. |
+| Logs | Retrieve application logs through `QueryLogs`, scoped to the demo workspace, environment, and resources. |
+| Metrics | Confirm the payment transaction counter increases after checkout through `QueryMetrics`. |
+| Traces | Retrieve a connected checkout trace spanning frontend, checkout, payment, shipping, and product catalog through `QueryTraces`. |
+| Access control | Reject log, metric, and trace queries outside the credential's workspace. |
 
-Kubernetes APIs install infrastructure, inspect builder-node placement, provide local port forwarding, and collect failure diagnostics. Product data and credentials come from Loco's APIs.
+User login and cluster attachment are separate. Dex authenticates the demo user; the agent attaches using the shared secret configured on the agent and control plane.
 
-The API-only regression tests reject database clients/seeding in the runner and cover API pagination, resource scopes, missing-API blockers, and startup retries.
+Telemetry queries go to the regional control-plane API. The observability proxy and ClickHouse stay private to that control plane. The runner queries one region at a time.
 
-## App matrix
+Missing APIs, failed checks, and blocked checks make the complete run fail. [GitHub Actions](https://github.com/team-loco/demo/actions) retains diagnostic artifacts and API evidence.
 
-| Cluster source builds | Prebuilt images |
+## Application services
+
+Each service has its own deployment configuration under [`apps/`](apps/). [`apps.json`](apps.json) records the build mode, port, protocol, and source Dockerfile.
+
+| Built from source on Loco | Deployed from prebuilt images |
 | --- | --- |
 | accounting | ad |
 | cart | currency |
@@ -59,32 +68,61 @@ The API-only regression tests reject database clients/seeding in the runner and 
 | recommendation | image-provider |
 | shipping | load-generator |
 
-Every app has its own `loco.yaml` and partial. Source contexts are staged under `.state/work/<service>/source`; shared upstream build files remain available. The product-catalog image receives the upstream OTel configuration file that the original deployment mounts through a ConfigMap. Source and license are retained under `upstream/`.
+Source deployments use the retained upstream Dockerfiles. Prebuilt deployments pass an immutable image reference to `loco deploy --image`. The runner resolves Loco resource IDs to wire private service addresses between applications.
 
-The upstream demo chart supplies only Kafka, Postgres, Valkey, and feature flags. The render check rejects any extra workload. Its Collector, Jaeger, Prometheus, Grafana, OpenSearch, AI, mobile, and application deployments are disabled. Loco supplies observability.
+The retained upstream sources are in [`upstream/`](upstream/). Source contexts are staged under `.state/work/<service>/source` with shared build files available. The product-catalog build includes its upstream OpenTelemetry configuration file. See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
-The CLI supports prebuilt deployments through `image:` in `loco.yaml`; `deploy --image` is tracked in [loco#713](https://github.com/team-loco/loco/issues/713). Callers resolve Loco-assigned resource IDs through `ResourceService` and use the corresponding private service addresses. Stable logical discovery is tracked in [loco#712](https://github.com/team-loco/loco/issues/712).
+## Keep an installation or run individual phases
 
-## Pins and blockers
+The runner creates its own `loco-demo` kind cluster and does not use your current Kubernetes context. It refuses an existing cluster or conflicting container names. A normal E2E run deletes infrastructure owned by this checkout on exit.
 
-`versions.json` pins CLI v0.0.103 with binary checksums, its source commit and platform image digests, Astronomy Shop 3.1.0, upstream chart 0.42.3 with its archive checksum, and supporting images. Loco charts come from the exact CLI release commit and their Helm dependency lockfiles; this is a release source pin, not a separately published chart version. `mise.toml`, `mise.lock`, and `uv.lock` pin tools and Python dependencies.
+To retain the installation for inspection:
 
-Current release gaps:
+```sh
+mise run e2e -- --keep
+```
 
-- [#719](https://github.com/team-loco/loco/issues/719): fresh cluster enrollment and agent credentials have no public API.
-- [#720](https://github.com/team-loco/loco/issues/720): the observability proxy exposes no trace-query API.
-- [#722](https://github.com/team-loco/loco/issues/722): `QueryMetrics` queries gauges only, so it cannot retrieve the payment counter.
-- [#711](https://github.com/team-loco/loco/issues/711): omitted health checks acquire HTTP checks in the planning path. The demo keeps health omitted on gRPC services/workers and verifies that intent through `GetResource`.
-- [#716](https://github.com/team-loco/loco/issues/716): released platform images lack ARM64 manifests.
+The phases are also available separately:
 
-Blocked or failed checks make the complete run fail. CI retains evidence; check Actions for the current result. Staging automation and the public deployment are tracked in [demo#1](https://github.com/team-loco/demo/issues/1).
+```sh
+mise run up
+mise run deploy
+mise run verify
+mise run down
+```
 
-## Failure reports
+After a successful setup, repeat a deployment for selected services with:
+
+```sh
+mise run deploy -- cart checkout
+```
+
+The complete E2E always tests all 16 services. Sanitized diagnostics and API evidence go to `artifacts/`; runtime credentials and identifiers stay in the ignored `.state/` directory. The downloaded CLI runs in a container with its own credential store.
+
+## Versions and configuration
+
+| Path | Contents |
+| --- | --- |
+| [`apps/`](apps/) | Per-service `loco.yaml` files. |
+| [`config/`](config/) | Local cluster, Loco, networking, observability, and supporting-service configuration. |
+| [`scripts/demo.py`](scripts/demo.py) | Setup, deployment, verification, cleanup, and failure reporting. |
+| [`tests/`](tests/) | Regression tests for the runner. |
+| [`versions.json`](versions.json) | Release versions, commits, image digests, and artifact checksums. |
+
+The repository pins Astronomy Shop 3.1.0 and upstream chart 0.42.3. Loco Helm charts come from the exact CLI release commit and use their dependency lockfiles. `mise.toml`, `mise.lock`, and `uv.lock` pin the tools and Python dependencies.
+
+Updating Loco requires published CLI binaries with verified checksums and matching immutable platform images. The release must support shared-secret cluster attachment, regional observability queries, trace and counter queries, `deploy --image`, and services without HTTP health checks. Rerun the complete E2E after changing release pins.
+
+## Report a failure
 
 ```sh
 mise run report
 ```
 
-Reports go to `team-loco/loco` with pinned versions, reproduction steps, and the failing check. Known blockers link their existing issues. Open issues with the same check title are reused.
+The runner reports failures to [`team-loco/loco`](https://github.com/team-loco/loco/issues) with the pinned versions, reproduction steps, and failing check. It links known issues and reuses open issues with the same check title.
 
-Automatic reporting from trusted main/manual runs requires `LOCO_ISSUES_TOKEN` with Issues write access to `team-loco/loco`. PR jobs never receive it. Without that secret, CI still fails and retains evidence, but does not automatically create issues.
+Automatic reporting from trusted main or manual CI runs requires `LOCO_ISSUES_TOKEN` with Issues write access to `team-loco/loco`. Pull-request jobs do not receive this token. Without it, CI still fails and retains evidence.
+
+## Upstream attribution
+
+Astronomy Shop comes from the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo). This repository adapts its application services for Loco and retains their [Apache 2.0 license](upstream/LICENSE) and copyright headers. See [`UPSTREAM.md`](UPSTREAM.md) for the exact source commit and retained components.
