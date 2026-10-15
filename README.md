@@ -30,7 +30,7 @@ mise run e2e
 
 `setup` installs pinned tools and Python dependencies and prepares the upstream sources and Loco release artifacts. `test` runs the runner's unit tests. `validate` checks the application configurations and rendered infrastructure. `e2e` provisions the local installation and runs the complete deployment and observability test.
 
-**Current status:** the runner pins published Loco v0.0.111 binaries and matching immutable platform images. Its release-contract preflight, unit tests, and configuration checks pass. The complete 16-service E2E is being verified in AMD64 CI; those preliminary checks do not establish a successful deployment.
+**Current status:** the runner pins published Loco v0.0.112 CLI binaries and six matching platform images from commit `5efe322d`. This includes local Gateway Service configuration and numeric runtime user support. Setup and chart/application configuration checks pass; the complete 16-service E2E has not passed.
 
 The pinned platform images include Linux AMD64 and ARM64 manifests. GitHub Actions uses an AMD64 runner. A native Apple Silicon run also requires compatible application images.
 
@@ -70,9 +70,13 @@ Each service has its own deployment configuration under [`apps/`](apps/). [`apps
 
 Source deployments use the retained upstream Dockerfiles. Prebuilt deployments pass an immutable image reference to `loco deploy --image`. The runner resolves Loco resource IDs to wire private service addresses between applications.
 
+Accounting and quote declare numeric runtime IDs matching the users in their pinned upstream base images: `1654:1654` for accounting's `app` and `82:82` for quote's `www-data`. Loco still enforces non-root execution. The pinned Loco v0.0.112 CLI, API, controller and CRDs support these declarations. Other images that default to root still need individual compatibility checks.
+
 The retained upstream sources are in [`upstream/`](upstream/). Source contexts are staged under `.state/work/<service>/source` with shared build files available. The product-catalog build includes its upstream OpenTelemetry configuration file. See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
 ## Keep an installation or run individual phases
+
+The application services use private Loco addresses. The frontend binds to all container interfaces for local port forwarding; the frontend proxy does not request a public domain during this isolated test.
 
 The runner creates its own `loco-demo` kind cluster and does not use your current Kubernetes context. It refuses an existing cluster or conflicting container names. A normal E2E run deletes infrastructure owned by this checkout on exit.
 
@@ -82,7 +86,9 @@ To retain the installation for inspection:
 mise run e2e -- --keep
 ```
 
-Local gateway certificates use a self-signed cert-manager issuer. The runner applies a bundled Helm postrenderer to the demo issuer before installation; it does not contact ACME or require Cloudflare credentials for `.test.local` names.
+The `loco-control-plane` Helm chart installs the API, dashboard, and private observability proxy. `loco-core` installs the worker agent and Gateway, with `certManager.issuer.type=selfSigned` for local certificates. PostgreSQL, registry, source storage, and Dex remain external Compose fixtures.
+
+The runner verifies the dashboard HTML, its runtime configuration, and Config RPC through the dashboard's own `/api` route before authenticating. Agent, CLI, and telemetry queries use that Gateway route; the API and observability proxy have no public Services. To open the retained dashboard, resolve `app.platform.test.local` to `127.0.0.1` on the host and visit `http://app.platform.test.local:18000`.
 
 The phases are also available separately:
 
@@ -111,9 +117,9 @@ The complete E2E always tests all 16 services. Sanitized diagnostics and API evi
 | [`tests/`](tests/) | Regression tests for the runner. |
 | [`versions.json`](versions.json) | Release versions, commits, image digests, and artifact checksums. |
 
-The repository pins Astronomy Shop 3.1.0 and upstream chart 0.42.3. Loco Helm charts come from the exact CLI release commit and use their dependency lockfiles. `mise.toml`, `mise.lock`, and `uv.lock` pin the tools and Python dependencies.
+The repository pins Astronomy Shop 3.1.0 and upstream chart 0.42.3. Loco CLI binaries retain their release tag, source commit, and published checksums. Loco Helm charts use a separately pinned immutable platform commit and its dependency lockfiles; all six platform images, including the dashboard, use verified published digests from that platform commit. `mise.toml`, `mise.lock`, and `uv.lock` pin the tools and Python dependencies.
 
-Updating Loco requires published CLI binaries with verified checksums and matching immutable platform images. The release must support shared-secret cluster attachment, regional observability queries, trace and counter queries, `deploy --image`, and services without HTTP health checks. Rerun the complete E2E after changing release pins.
+Updating Loco requires published CLI binaries with verified checksums and immutable platform images matching the chart source commit. The release must support shared-secret cluster attachment, regional observability queries, trace and counter queries, `deploy --image`, and services without HTTP health checks. Rerun the complete E2E after changing release pins.
 
 ## Report a failure
 

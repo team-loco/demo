@@ -48,6 +48,5 @@ services:
       timeout: 5
       failThreshold: 3
       startupGracePeriod: 60
-    domains:
-    - shop.demo.test.local
+    domains: []
     image: ghcr.io/open-telemetry/demo:3.1.0-frontend-proxy@sha256:fd4da88bfeaadd9437a4ee00f708e129a9eedb9c48874cea8e94b034983280a1

@@ -82,6 +82,12 @@ class DeploymentContractTests(unittest.TestCase):
             self.assertRegex(image, r"@sha256:[a-f0-9]{64}$")
             self.assertNotIn(":latest", image)
 
+    def test_platform_images_match_the_independent_platform_source_pin(self):
+        loco = demo.VERSIONS["loco"]
+        self.assertEqual(set(loco["images"]), {"api", "agent", "controller", "builder", "obs-proxy", "ui"})
+        for image in loco["images"].values():
+            self.assertIn(":sha-" + loco["platformCommit"] + "@sha256:", image)
+
     def test_kind_uses_a_separate_builder_worker(self):
         config = yaml.safe_load((ROOT / "config/kind.yaml").read_text())
         workers = [n for n in config["nodes"] if n["role"] == "worker"]
@@ -129,6 +135,14 @@ class HarnessTests(unittest.TestCase):
             head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cache, text=True).strip()
             self.assertEqual(head, current)
             demo.checkout("unused/repository", "v2", current, cache)
+
+    def test_platform_source_accepts_an_exact_commit_without_a_release_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache, _, current = self.release_cache(Path(tmp))
+            demo.checkout("unused/repository", current, current, cache)
+            head = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=cache, text=True).strip()
+            self.assertEqual(head, current)
+            self.assertEqual((cache / "release.txt").read_text(), "new release")
 
     def test_wrong_release_pin_leaves_the_cached_checkout_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -453,23 +467,28 @@ class BootstrapContractTests(unittest.TestCase):
             compose.assert_not_called()
             self.assertTrue((Path(tmp) / "kubeconfig").exists())
 
-    def test_control_plane_exposes_only_api_with_private_proxy_sidecar(self):
-        docs = demo.control_plane_documents()
-        deployment = next(doc for doc in docs if doc["kind"] == "Deployment")
-        service = next(doc for doc in docs if doc["kind"] == "Service")
-        containers = deployment["spec"]["template"]["spec"]["containers"]
-        self.assertEqual([container["name"] for container in containers], ["api", "observability"])
-        self.assertEqual(service["spec"]["ports"], [{"port": 8000, "targetPort": 8000, "nodePort": demo.API_NODE_PORT}])
-        self.assertEqual(deployment["metadata"]["namespace"], demo.API_NAMESPACE)
-        self.assertEqual(containers[1]["readinessProbe"]["httpGet"]["path"], "/readyz")
-        self.assertFalse(deployment["spec"]["template"]["spec"]["automountServiceAccountToken"])
-        for container in containers:
-            self.assertRegex(container["image"], r"@sha256:[a-f0-9]{64}$")
+    def test_control_plane_uses_the_chart_and_existing_secrets(self):
+        versions = copy.deepcopy(demo.VERSIONS)
+        versions["loco"]["images"]["ui"] = versions["loco"]["images"]["api"]
+        with patch.object(demo, "VERSIONS", versions):
+            values = demo.control_plane_values()
+        self.assertEqual(values["controlPlaneHostname"], values["ui"]["hostname"])
+        self.assertEqual(values["api"]["existingSecret"], "loco-demo-api-env")
+        self.assertEqual(values["obsProxy"]["clickhouse"]["existingSecret"]["key"], "reader")
+        self.assertEqual(values["obsProxy"]["clickhouse"]["migratorExistingSecret"]["key"], "migrator")
         kind = yaml.safe_load((ROOT / "config/kind.yaml").read_text())
         mapping = kind["nodes"][0]["extraPortMappings"][0]
-        self.assertEqual(mapping["containerPort"], demo.API_NODE_PORT)
+        self.assertEqual(mapping["containerPort"], demo.GATEWAY_NODE_PORT)
         self.assertEqual(mapping["hostPort"], demo.CLI_PORT)
         self.assertEqual(mapping["listenAddress"], "127.0.0.1")
+
+    def test_gateway_exposure_is_owned_by_envoy_and_loopback_mapped(self):
+        config = yaml.safe_load((ROOT / "config/core.yaml").read_text())
+        service = config["envoyProxy"]["service"]
+        self.assertEqual(service["type"], "NodePort")
+        self.assertEqual(service["externalTrafficPolicy"], "Cluster")
+        self.assertEqual(service["patch"]["value"]["spec"]["ports"], [{"port": 80, "nodePort": demo.GATEWAY_NODE_PORT}])
+        self.assertEqual(config["certManager"]["issuer"]["type"], "selfSigned")
 
     def test_attachment_reads_stable_namespace_identity_and_waits_on_public_regions(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
@@ -483,35 +502,57 @@ class BootstrapContractTests(unittest.TestCase):
         kube.assert_called_once_with("get", "namespace", "kube-system", "-o", "json")
 
 
-class LocalCertificateTests(unittest.TestCase):
-    def manifests(self):
-        before = [
-            {"kind": "ClusterIssuer", "metadata": {"name": "loco-demo-local"}, "spec": {"acme": {"server": "https://acme.example"}}},
-            {"kind": "Certificate", "spec": {"issuerRef": {"name": "loco-demo-local", "kind": "ClusterIssuer"}}},
-            {"kind": "Deployment", "spec": {"template": {"spec": {"containers": [{"image": "original"}]}}}},
-        ]
-        after = copy.deepcopy(before)
-        after[0]["spec"] = {"selfSigned": {}}
-        return before, after
+class FailureClassificationTests(unittest.TestCase):
+    def test_runtime_failures_are_not_assigned_to_old_product_issues(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
+            with patch.object(demo, "STATE", directory), patch.object(demo, "OUT", directory), \
+                 patch.object(demo, "RESULTS", []), \
+                 patch.object(demo, "check_resource", side_effect=RuntimeError("CreateContainerConfigError")), \
+                 patch.object(demo, "check_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
+                 patch.object(demo, "traffic", return_value="checked"), patch.object(demo, "check_logs", return_value="checked"), \
+                 patch.object(demo, "check_metrics", side_effect=RuntimeError("token expired")), \
+                 patch.object(demo, "check_traces", return_value="checked"), patch.object(demo, "check_kafka", return_value="checked"):
+                self.assertFalse(demo.verify())
+                failures = [result for result in demo.RESULTS if result["status"] == "FAIL"]
+                self.assertEqual([result["name"] for result in failures], ["health:payment", "metrics-api"])
+                self.assertTrue(all(result.get("issue") is None for result in failures))
 
-    def test_local_certificate_issuer_has_no_acme_dependency(self):
-        before, after = self.manifests()
-        demo.assert_local_certificates(before, after)
-        with self.assertRaisesRegex(RuntimeError, "self-signed"):
-            demo.assert_local_certificates(before, before)
 
-    def test_renderer_cannot_modify_controller_workloads(self):
-        before, after = self.manifests()
-        after[2]["spec"]["template"]["spec"]["containers"][0]["image"] = "modified"
-        with self.assertRaisesRegex(RuntimeError, "change only the demo issuer"):
-            demo.assert_local_certificates(before, after)
+class DashboardTests(unittest.TestCase):
+    html = '<script src="/runtime-config.js"></script><script type="module" src="/app.js"></script>'
+    runtime = 'window.locoConfig = {"apiURL":"/api"};'
 
-    def test_certificate_must_reference_the_local_issuer(self):
-        before, after = self.manifests()
-        before[1]["spec"]["issuerRef"]["name"] = "remote"
-        after[1]["spec"]["issuerRef"]["name"] = "remote"
-        with self.assertRaisesRegex(RuntimeError, "must reference"):
-            demo.assert_local_certificates(before, after)
+    def test_same_origin_runtime_and_real_config_rpc_are_required(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {"Cache-Control": "no-store"})]), \
+             patch.object(demo, "api", return_value={"serviceDefaults": {"cpu": "100m"}}) as api:
+            demo.check_dashboard()
+            self.assertTrue((Path(tmp) / "dashboard.html").exists())
+        api.assert_called_once_with("loco.config.v1.ConfigService/GetConfig", {}, token=None)
+
+    def test_compiled_external_api_or_cached_runtime_fails(self):
+        for runtime, headers in [('window.locoConfig = {"apiURL":"https://api.loco.build"};', {}),
+                                 (self.runtime, {"Cache-Control": "public, immutable"})]:
+            with self.subTest(runtime=runtime, headers=headers), \
+                 patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (runtime, headers)]), \
+                 patch.object(demo, "api") as api:
+                with self.assertRaises(RuntimeError):
+                    demo.check_dashboard()
+                api.assert_not_called()
+
+    def test_frontend_html_cannot_count_as_a_successful_api_rewrite(self):
+        with patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {})]), \
+             patch.object(demo, "api", return_value={}):
+            with self.assertRaisesRegex(RuntimeError, "Config RPC"):
+                demo.check_dashboard()
+
+    def test_public_rpc_sets_dashboard_host_and_prefix(self):
+        with patch.object(demo, "rpc", return_value={}) as rpc:
+            demo.api("loco.config.v1.ConfigService/GetConfig", {}, token=None)
+        rpc.assert_called_once_with(f"http://127.0.0.1:{demo.CLI_PORT}/api",
+                                    "loco.config.v1.ConfigService/GetConfig", {}, None, host=demo.DASHBOARD_HOST)
 
 
 class LiveProgressTests(unittest.TestCase):

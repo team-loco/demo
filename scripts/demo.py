@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
-import copy
 import datetime as dt
 import hashlib
 import json
@@ -37,9 +36,11 @@ CLUSTER = "loco-demo"
 PROJECT = "loco-demo"
 CONTEXT = "kind-" + CLUSTER
 CORE = CACHE / "loco"
+CLI_SOURCE = CACHE / "loco-cli-source"
 REGION = "us-east-1"
 API_NAMESPACE = "observability"
-API_NODE_PORT = 30080
+GATEWAY_NODE_PORT = 30080
+DASHBOARD_HOST = "app.platform.test.local"
 CLI_PORT = 18000
 DEX_PORT = 18056
 READY_SECONDS = 600
@@ -90,7 +91,6 @@ def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=No
         (CACHE / "helm").mkdir(parents=True, exist_ok=True)
         env["HELM_REPOSITORY_CONFIG"] = str(CACHE / "helm/repositories.yaml")
         env["HELM_REPOSITORY_CACHE"] = str(CACHE / "helm/cache")
-        env["HELM_PLUGINS"] = str(ROOT / "scripts/helm-plugins")
     if stream:
         result = run_streamed(args, cwd=cwd, input=input, timeout=timeout, env=env, log=log)
     else:
@@ -208,8 +208,10 @@ def compose(*args, **kwargs):
     return run(["docker", "compose", "-p", PROJECT, "-f", STATE / "compose.yaml", *args], **kwargs)
 
 
-def rpc(url, procedure, data, token=None):
+def rpc(url, procedure, data, token=None, *, host=None):
     headers = {"Content-Type": "application/json", "Connect-Protocol-Version": "1"}
+    if host:
+        headers["Host"] = host
     if token:
         headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(
@@ -231,7 +233,7 @@ def rpc(url, procedure, data, token=None):
 
 def api(procedure, data, token="session"):
     bearer = credentials()["session"] if token == "session" else token
-    return rpc(f"http://127.0.0.1:{CLI_PORT}", procedure, data, bearer)
+    return rpc(f"http://127.0.0.1:{CLI_PORT}/api", procedure, data, bearer, host=DASHBOARD_HOST)
 
 
 def list_api(procedure, request, key):
@@ -272,16 +274,20 @@ def require_release_contracts():
         "internal/session/config.go": ['"config.yaml"'],
         "cmd/loco/infra/deploy.go": ['cmd.Flags().String("image"'],
         "observability-proxy/pkg/clickhouse/metrics.go": ["FROM otel_metrics_sum"],
+        "charts/loco-control-plane/templates/ui.yaml": ['window.locoConfig = {"apiURL":"/api"};', "ReplacePrefixMatch"],
+        "charts/loco-control-plane/templates/api-deployment.yaml": ["api.existingSecret"],
+        "charts/loco-core/templates/cm-issuer.yaml": ["selfSigned"],
     }
     missing = []
     for name, symbols in required.items():
-        path = CORE / name
+        source = CLI_SOURCE if name.startswith(("cmd/", "internal/session/")) else CORE
+        path = source / name
         content = path.read_text() if path.exists() else ""
         missing.extend(name + ": " + symbol for symbol in symbols if symbol not in content)
     if missing:
         raise PublicAPIGap(
-            f"Pinned release {VERSIONS['loco']['cli']} ({VERSIONS['loco']['commit']}) lacks the demo's required contracts: "
-            + "; ".join(missing) + ". Update versions.json only after compatible binaries and images are published; "
+            f"CLI {VERSIONS['loco']['cli']}, platform source {VERSIONS['loco'].get('platformCommit', VERSIONS['loco']['commit'])} lacks required contracts: "
+            + "; ".join(missing) + ". Update versions.json only after required contracts are merged and artifacts are published; "
             "unmerged PRs and local source builds are not released artifacts.",
             KNOWN["enrollment"])
 
@@ -332,24 +338,28 @@ def record(name, fn, issue=None):
     return result["status"] == "PASS"
 
 
-def checkout(repository, tag, commit, dest):
+def checkout(repository, ref, commit, dest):
     if not dest.exists():
-        run(["git", "clone", "--depth", "1", "--branch", tag,
-             f"https://github.com/{repository}.git", dest])
-    actual = run(["git", "rev-parse", "HEAD"], cwd=dest).strip()
-    if actual != commit:
-        print(f"Updating cached {repository} checkout to {tag}", flush=True)
-        run(["git", "fetch", "--depth", "1", "origin", f"refs/tags/{tag}"], cwd=dest)
-        fetched = run(["git", "rev-parse", "FETCH_HEAD^{commit}"], cwd=dest).strip()
-        if fetched != commit:
-            raise RuntimeError(f"{dest}: expected {commit}, got {fetched} for {tag}")
-        run(["git", "checkout", "--detach", commit], cwd=dest)
+        run(["git", "init", dest])
+        run(["git", "remote", "add", "origin", f"https://github.com/{repository}.git"], cwd=dest)
+    current = run(["git", "rev-parse", "HEAD"], cwd=dest, check=False)
+    if current.returncode == 0 and current.stdout.strip() == commit:
+        return
+    reference = ref if ref == commit else f"refs/tags/{ref}"
+    print(f"Updating cached {repository} checkout to {ref}", flush=True)
+    run(["git", "fetch", "--depth", "1", "origin", reference], cwd=dest)
+    fetched = run(["git", "rev-parse", "FETCH_HEAD^{commit}"], cwd=dest).strip()
+    if fetched != commit:
+        raise RuntimeError(f"{dest}: expected {commit}, got {fetched} for {ref}")
+    run(["git", "checkout", "--detach", commit], cwd=dest)
 
 
 def prepare():
     CACHE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
-    checkout("team-loco/loco", VERSIONS["loco"]["cli"], VERSIONS["loco"]["commit"], CORE)
+    checkout("team-loco/loco", VERSIONS["loco"]["cli"], VERSIONS["loco"]["commit"], CLI_SOURCE)
+    platform_commit = VERSIONS["loco"]["platformCommit"]
+    checkout("team-loco/loco", platform_commit, platform_commit, CORE)
     bindir = CACHE / "bin" / VERSIONS["loco"]["cli"]
     bindir.mkdir(parents=True, exist_ok=True)
     arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine())
@@ -389,9 +399,9 @@ def prepare():
             raise RuntimeError("Upstream chart checksum mismatch")
         with tarfile.open(archive) as source:
             source.extractall(archive.parent, filter="data")
-    for name in ["loco-core", "loco-networking", "loco-obs"]:
+    for name in ["loco-core", "loco-networking", "loco-obs", "loco-control-plane"]:
         run(["helm", "dependency", "build", CORE / "charts" / name], timeout=READY_SECONDS)
-    print("CLI checksums and release source verified; chart dependencies prepared", flush=True)
+    print("CLI checksums and release source verified; immutable platform source and chart dependencies prepared", flush=True)
 
 
 def native_cli():
@@ -407,6 +417,7 @@ def cli(*args, **kwargs):
     arch = "arm64" if platform.machine() in ("arm64", "aarch64") else "amd64"
     return run([
         "docker", "run", "--rm", "--network", "kind",
+        "--add-host", DASHBOARD_HOST + ":" + json.loads((STATE / "endpoint.json").read_text())["nodeIP"],
         "--mount", f"type=bind,source={ROOT},target=/demo",
         "--mount", f"type=bind,source={STATE / 'cli'},target=/root/.loco",
         "--workdir", "/demo", "--env", "LOCO_CREDENTIAL_STORE=file",
@@ -463,36 +474,45 @@ def validate():
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     assert_infrastructure_only(docs)
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    validate_local_certificates()
-    print("Validated all 16 loco.yaml files, infrastructure-only chart and local certificates", flush=True)
+    validate_platform_charts()
+    print("Validated all 16 loco.yaml files, infrastructure-only chart and control-plane charts", flush=True)
 
 
-def assert_local_certificates(before, after):
-    expected = copy.deepcopy(before)
-    issuers = [doc for doc in expected if doc.get("kind") == "ClusterIssuer"
-               and doc["metadata"]["name"] == "loco-demo-local"]
-    if len(issuers) != 1:
-        raise RuntimeError("Expected exactly one local demo certificate issuer")
-    issuers[0]["spec"] = {"selfSigned": {}}
-    if after != expected:
-        raise RuntimeError("Local TLS rendering must change only the demo issuer to self-signed")
-    certificates = [doc for doc in after if doc.get("kind") == "Certificate"]
-    if not certificates or any(doc["spec"].get("issuerRef") != {
-            "name": "loco-demo-local", "kind": "ClusterIssuer"} for doc in certificates):
-        raise RuntimeError("Local certificates must reference the self-signed demo issuer")
+def control_plane_values():
+    images = VERSIONS["loco"]["images"]
+    if "ui" not in images:
+        raise RuntimeError("Pin a published immutable UI image matching platformCommit before installing the control-plane chart")
+    return {
+        "controlPlaneHostname": DASHBOARD_HOST,
+        "ui": {"hostname": DASHBOARD_HOST, "image": image_values(images["ui"])},
+        "api": {"image": image_values(images["api"]), "existingSecret": "loco-demo-api-env"},
+        "obsProxy": {
+            "image": image_values(images["obs-proxy"]),
+            "clickhouse": {
+                "existingSecret": {"name": "loco-demo-clickhouse", "key": "reader"},
+                "migratorExistingSecret": {"name": "loco-demo-clickhouse", "key": "migrator"},
+            },
+        },
+    }
 
 
-def validate_local_certificates():
+def validate_platform_charts():
+    require_release_contracts()
     values = {"agent": {"clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production",
                         "image": image_values(VERSIONS["loco"]["images"]["agent"])}}
     write_yaml(STATE / "core-render-values.yaml", values)
-    command = ["helm", "template", "loco-core", CORE / "charts/loco-core", "--namespace", "loco-system",
-               "-f", ROOT / "config/core.yaml", "-f", STATE / "core-render-values.yaml"]
-    before = [doc for doc in yaml.safe_load_all(run(command)) if doc]
-    after = [doc for doc in yaml.safe_load_all(run(command + ["--post-renderer", "local-certificates"])) if doc]
-    assert_local_certificates(before, after)
-    write_yaml(OUT / "local-certificates.yaml", [doc for doc in after
-                                               if doc.get("kind") in ("ClusterIssuer", "Certificate")])
+    rendered = run(["helm", "template", "loco-core", CORE / "charts/loco-core", "--namespace", "loco-system",
+                    "-f", ROOT / "config/core.yaml", "-f", STATE / "core-render-values.yaml"])
+    gateway = next(doc for doc in yaml.safe_load_all(rendered) if doc and doc.get("kind") == "EnvoyProxy")
+    service = gateway["spec"].get("provider", {}).get("kubernetes", {}).get("envoyService")
+    configured = yaml.safe_load((ROOT / "config/core.yaml").read_text())["envoyProxy"]["service"]
+    if service != configured:
+        raise RuntimeError("Pinned loco-core chart does not render envoyProxy.service for local Gateway NodePort access")
+    write_yaml(STATE / "control-plane-render-values.yaml", control_plane_values())
+    rendered += "\n---\n" + run([
+        "helm", "template", "loco-control-plane", CORE / "charts/loco-control-plane",
+        "--namespace", API_NAMESPACE, "-f", STATE / "control-plane-render-values.yaml"])
+    (OUT / "platform-charts.yaml").write_text(rendered)
 
 
 def assert_infrastructure_only(docs):
@@ -542,7 +562,7 @@ def bootstrap_compose():
         "DEFAULT_PLATFORM_DOMAIN": "demo.test.local",
         "AUTH_ISSUERS": json.dumps([{"issuer": "http://loco-demo-dex:5556/dex", "audience": "loco"}]),
         "LOCO_AGENT_CONNECTION_SECRETS": c["agent"],
-        "OBSERVABILITY_PROXY_URL": "http://127.0.0.1:8081",
+        "WEB_URL": f"http://{DASHBOARD_HOST}:{CLI_PORT}",
         "LOCO_REGISTRY_HOST": "loco-demo-registry:5000",
         "LOCO_REGISTRY_URL": "http://loco-demo-registry:5000",
         "LOCO_REGISTRY_USERNAME": "api", "LOCO_REGISTRY_PASSWORD": "loco-dev-api",
@@ -555,6 +575,7 @@ def bootstrap_compose():
     (STATE / "api-env.json").chmod(0o600)
     dex = yaml.safe_load((CORE / "env/conformance/dex.yaml").read_text())
     dex["issuer"] = "http://loco-demo-dex:5556/dex"
+    dex["staticClients"][0]["redirectURIs"] = [f"http://{DASHBOARD_HOST}:{CLI_PORT}/auth/callback"]
     dex["staticPasswords"][0]["email"] = "demo@example.test"
     dex["staticPasswords"][0]["username"] = "demo"
     write_yaml(STATE / "dex.yaml", dex)
@@ -649,6 +670,9 @@ def setup_external_hosts():
         addresses["loco-demo-" + name] = run([
             "docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
             "loco-demo-" + name]).strip()
+    addresses[DASHBOARD_HOST] = run([
+        "docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
+        CLUSTER + "-control-plane"]).strip()
     cm = json.loads(kube("-n", "kube-system", "get", "configmap", "coredns", "-o", "json"))
     hosts = "\n".join(f"        {ip} {name}" for name, ip in addresses.items())
     cm["data"]["Corefile"] = cm["data"]["Corefile"].replace(
@@ -669,58 +693,54 @@ def image_values(image):
     return {"repository": repository, "tag": tag}
 
 
-def control_plane_documents():
-    labels = {"app": "loco-demo-control-plane"}
-    security = {"allowPrivilegeEscalation": False, "capabilities": {"drop": ["ALL"]}}
-    containers = []
-    for name, image, port, env_secret, health, readiness in [
-        ("api", "api", 8000, "loco-demo-api-env", "/health", "/health"),
-        ("observability", "obs-proxy", 8081, "loco-demo-observability-env", "/healthz", "/readyz"),
-    ]:
-        containers.append({
-            "name": name, "image": VERSIONS["loco"]["images"][image],
-            "securityContext": security,
-            "envFrom": [{"secretRef": {"name": env_secret}}],
-            "ports": [{"containerPort": port}],
-            "livenessProbe": {"httpGet": {"path": health, "port": port}, "initialDelaySeconds": 10},
-            "readinessProbe": {"httpGet": {"path": readiness, "port": port}},
-            "resources": {"requests": {"cpu": "100m", "memory": "128Mi"},
-                          "limits": {"cpu": "1", "memory": "512Mi"}},
-        })
-    metadata = {"name": "loco-demo-api", "namespace": API_NAMESPACE}
-    return [
-        {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": metadata,
-         "spec": {"replicas": 1, "selector": {"matchLabels": labels},
-                  "template": {"metadata": {"labels": labels}, "spec": {
-                      "automountServiceAccountToken": False,
-                      "securityContext": {"runAsNonRoot": True, "seccompProfile": {"type": "RuntimeDefault"}},
-                      "containers": containers}}}},
-        {"apiVersion": "v1", "kind": "Service", "metadata": metadata,
-         "spec": {"type": "NodePort", "selector": labels,
-                  "ports": [{"port": 8000, "targetPort": 8000, "nodePort": API_NODE_PORT}]}},
-        {"apiVersion": "networking.k8s.io/v1", "kind": "NetworkPolicy", "metadata": metadata,
-         "spec": {"podSelector": {"matchLabels": labels}, "policyTypes": ["Ingress"],
-                  "ingress": [{"ports": [{"protocol": "TCP", "port": 8000}]}]}},
-    ]
-
-
 def install_control_plane():
     c = credentials()
     secret(API_NAMESPACE, "loco-demo-api-env", json.loads((STATE / "api-env.json").read_text()))
     host = "clickhouse-loco-obs-clickhouse.observability.svc.cluster.local:9000"
-    secret(API_NAMESPACE, "loco-demo-observability-env", {
-        "PORT": "8081", "CONTROL_PLANE_URL": "http://127.0.0.1:8000",
-        "CLICKHOUSE_URL": f"clickhouse://loco_reader:{c['reader']}@{host}/loco_obs",
-        "CLICKHOUSE_MIGRATOR_URL": f"clickhouse://loco_migrator:{c['migrator']}@{host}/loco_obs",
-        "CLICKHOUSE_DB": "loco_obs",
+    secret(API_NAMESPACE, "loco-demo-clickhouse", {
+        "reader": f"clickhouse://loco_reader:{c['reader']}@{host}/loco_obs",
+        "migrator": f"clickhouse://loco_migrator:{c['migrator']}@{host}/loco_obs",
     })
-    apply(control_plane_documents())
-    kube("-n", API_NAMESPACE, "rollout", "status", "deployment/loco-demo-api", "--timeout=600s", stream=True)
+    write_yaml(STATE / "control-plane.yaml", control_plane_values())
+    helm_install("loco-control-plane", CORE / "charts/loco-control-plane", API_NAMESPACE,
+                 "-f", STATE / "control-plane.yaml")
+
+
+def dashboard_get(path):
+    request = urllib.request.Request(f"http://127.0.0.1:{CLI_PORT}" + path,
+                                     headers={"Host": DASHBOARD_HOST})
+    with urllib.request.urlopen(request, timeout=5) as response:
+        return response.read().decode(), response.headers
+
+
+def check_dashboard():
+    html, _ = dashboard_get("/")
+    runtime, headers = dashboard_get("/runtime-config.js")
+    if '<script src="/runtime-config.js"></script>' not in html:
+        raise RuntimeError("Dashboard HTML does not load its runtime configuration")
+    if html.index('/runtime-config.js') > html.index('type="module"'):
+        raise RuntimeError("Dashboard runtime configuration loads after the application")
+    if runtime.strip() != 'window.locoConfig = {"apiURL":"/api"};':
+        raise RuntimeError("Dashboard API runtime configuration is not same-origin /api")
+    if "immutable" in headers.get("Cache-Control", "").lower():
+        raise RuntimeError("Dashboard runtime configuration must not be immutable")
+    config = api("loco.config.v1.ConfigService/GetConfig", {}, token=None)
+    if "serviceDefaults" not in config:
+        raise RuntimeError("Dashboard /api route did not reach the Config RPC")
+    (OUT / "dashboard.html").write_text(html)
+    (OUT / "dashboard-runtime.js").write_text(runtime)
+    (OUT / "dashboard-config.json").write_text(json.dumps(config, indent=2) + "\n")
+    return "Published dashboard loads runtime configuration and Config RPC through its same-origin /api route"
+
+
+def connect_gateway():
     node_ip = run(["docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
                    CLUSTER + "-control-plane"]).strip()
-    (STATE / "endpoint.json").write_text(json.dumps({"cliApiUrl": f"http://{node_ip}:{API_NODE_PORT}"}))
-    wait_for("regional control-plane API", lambda: urllib.request.urlopen(
-        f"http://127.0.0.1:{CLI_PORT}/health", timeout=5).status == 200)
+    (STATE / "endpoint.json").write_text(json.dumps({
+        "cliApiUrl": f"http://{DASHBOARD_HOST}:{GATEWAY_NODE_PORT}/api", "nodeIP": node_ip}))
+    wait_for("public Gateway and dashboard API route", lambda: bool(
+        api("loco.config.v1.ConfigService/GetConfig", {}, token=None).get("serviceDefaults")))
+    check_dashboard()
 
 
 def check_attachment():
@@ -784,18 +804,19 @@ def up():
     write_yaml(STATE / "observability.yaml", obs)
     helm_install("loco-obs", CORE / "charts/loco-obs", API_NAMESPACE,
                  "-f", ROOT / "config/observability.yaml", "-f", STATE / "observability.yaml")
-    with step("Start regional control plane and private observability proxy"):
-        install_control_plane()
-    with step("Authenticate demo user and create workspace"):
-        create_identity()
     core = {"agent": {"image": image_values(VERSIONS["loco"]["images"]["agent"]),
                       "clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production"},
-            "env": {"CONTROL_PLANE_URL": f"http://loco-demo-api.{API_NAMESPACE}.svc.cluster.local:8000",
+            "env": {"CONTROL_PLANE_URL": f"http://{DASHBOARD_HOST}:{GATEWAY_NODE_PORT}/api",
                     "AGENT_TOKEN": c["agent"]}}
     write_yaml(STATE / "core.yaml", core)
     helm_install("loco-core", CORE / "charts/loco-core", "loco-system",
-                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml",
-                 "--post-renderer", "local-certificates")
+                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml")
+    with step("Install regional API, dashboard and private observability proxy"):
+        install_control_plane()
+    with step("Verify dashboard and same-origin public API routing"):
+        connect_gateway()
+    with step("Authenticate demo user and create workspace"):
+        create_identity()
     with step("Wait for automatic cluster attachment"):
         check_attachment()
     helm_install("astronomy", CACHE / "charts/opentelemetry-demo", app_namespace(),
@@ -1114,12 +1135,12 @@ def check_kafka():
 def verify():
     resources = json.loads((STATE / "resources.json").read_text())
     for name, resource_id in resources.items():
-        record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid), KNOWN["health"])
+        record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid))
     record("build-matrix", lambda: check_builds(resources))
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
         record("logs-api", check_logs)
-        record("metrics-api", check_metrics, KNOWN["metrics-api"])
+        record("metrics-api", check_metrics)
         record("traces-api", check_traces)
         record("kafka-consumers", check_kafka)
     else:
@@ -1165,7 +1186,7 @@ def save_report():
     OUT.mkdir(exist_ok=True)
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
     lines = ["# Loco demo E2E evidence", "", "CLI: " + VERSIONS["loco"]["cli"],
-             "Core/charts commit: " + VERSIONS["loco"]["commit"],
+             "Core/charts commit: " + VERSIONS["loco"].get("platformCommit", VERSIONS["loco"]["commit"]),
              "Astronomy Shop: " + VERSIONS["upstream"]["release"], ""]
     for result in RESULTS:
         lines.extend([f"## {result['status']}: {result['name']}", "", str(result["detail"]), ""])
@@ -1194,7 +1215,7 @@ def report():
         body = OUT / "issue.md"
         body.write_text(f"""The pinned Astronomy Shop E2E check `{failure['name']}` fails.
 
-CLI: `{VERSIONS['loco']['cli']}`. Core and Helm chart source: `{VERSIONS['loco']['commit']}`.
+CLI: `{VERSIONS['loco']['cli']}`. CLI source: `{VERSIONS['loco']['commit']}`. Platform and Helm chart source: `{VERSIONS['loco'].get('platformCommit', VERSIONS['loco']['commit'])}`.
 Upstream demo: `{VERSIONS['upstream']['release']}`; chart `{VERSIONS['upstream']['chart']}`.
 
 Reproduce from https://github.com/team-loco/demo with Docker running:

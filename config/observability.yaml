@@ -1,4 +1,5 @@
 gatewayNamespace: loco-system
+controlPlaneNamespace: observability
 clickhouse:
   clickhouse:
     persistence:

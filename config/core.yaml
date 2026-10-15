@@ -7,8 +7,17 @@ global:
 certManager:
   issuer:
     name: loco-demo-local
-    email: demo@example.test
-    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    type: selfSigned
 envoyProxy:
   tracing:
     samplingRate: 100
+  service:
+    type: NodePort
+    externalTrafficPolicy: Cluster
+    patch:
+      type: StrategicMerge
+      value:
+        spec:
+          ports:
+            - port: 80
+              nodePort: 30080
