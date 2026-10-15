@@ -2,6 +2,8 @@ version: 1
 partial: load-generator
 services:
   load-generator:
+    runAsUser: 65534
+    runAsGroup: 65534
     port: 8089
     env:
       FLAGD_HOST: flagd

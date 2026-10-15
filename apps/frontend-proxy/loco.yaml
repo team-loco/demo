@@ -2,6 +2,8 @@ version: 1
 partial: frontend-proxy
 services:
   frontend-proxy:
+    runAsUser: 101
+    runAsGroup: 101
     port: 8080
     env:
       CHATBOT_HOST: chatbot
