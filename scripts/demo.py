@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import contextlib
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -11,10 +13,12 @@ from pathlib import Path
 import platform
 import re
 import secrets
+import signal
 import shutil
 import subprocess
 import sys
 import tarfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +45,7 @@ DEX_PORT = 18056
 READY_SECONDS = 600
 TELEMETRY_SECONDS = 240
 BUILD_SECONDS = 2100
+PROGRESS_SECONDS = 15
 RESULTS = []
 INFRA_STARTED = False
 KNOWN = {
@@ -78,21 +83,96 @@ def app_namespace():
     return "ws-" + workspace_id()
 
 
-def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=None):
+def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False):
     args = [str(a) for a in args]
     env = os.environ.copy()
     if args[0] == "helm":
         (CACHE / "helm").mkdir(parents=True, exist_ok=True)
         env["HELM_REPOSITORY_CONFIG"] = str(CACHE / "helm/repositories.yaml")
         env["HELM_REPOSITORY_CACHE"] = str(CACHE / "helm/cache")
-    result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, timeout=timeout, env=env)
-    if log:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
-        Path(log).write_text(redact(result.stdout))
+        env["HELM_PLUGINS"] = str(ROOT / "scripts/helm-plugins")
+    if stream:
+        result = run_streamed(args, cwd=cwd, input=input, timeout=timeout, env=env, log=log)
+    else:
+        result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, timeout=timeout, env=env)
+        if log:
+            Path(log).parent.mkdir(parents=True, exist_ok=True)
+            Path(log).write_text(redact(result.stdout))
     if check and result.returncode:
         raise RuntimeError(f"{args[0]} failed (exit {result.returncode}):\n{redact(result.stdout[-6000:])}")
     return result.stdout if check else result
+
+
+def run_streamed(args, *, cwd, input, timeout, env, log):
+    if log:
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
+    output = []
+    with contextlib.ExitStack() as stack:
+        logfile = stack.enter_context(Path(log).open("w")) if log else None
+        process = stack.enter_context(subprocess.Popen(
+            args, cwd=cwd, env=env, stdin=subprocess.PIPE if input is not None else None,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True))
+        def read_output():
+            for line in process.stdout:
+                output.append(line)
+                sanitized = redact(line)
+                print(sanitized, end="", flush=True)
+                if logfile:
+                    logfile.write(sanitized)
+                    logfile.flush()
+        def write_input():
+            try:
+                process.stdin.write(input)
+            except BrokenPipeError:
+                pass
+            finally:
+                process.stdin.close()
+        reader = threading.Thread(target=read_output)
+        reader.start()
+        writer = threading.Thread(target=write_input) if input is not None else None
+        if writer:
+            writer.start()
+        started = time.monotonic()
+        deadline = started + timeout
+        label = Path(log).stem if log else Path(args[0]).name
+        try:
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(args[0], timeout)
+                try:
+                    process.wait(timeout=min(PROGRESS_SECONDS, remaining))
+                    break
+                except subprocess.TimeoutExpired:
+                    elapsed = time.monotonic() - started
+                    print(f"RUN {label} ({elapsed:.0f}s elapsed)", flush=True)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+            reader.join()
+            raise subprocess.TimeoutExpired(args[0], timeout, output=redact("".join(output))) from None
+        finally:
+            reader.join()
+            if writer:
+                writer.join()
+    return subprocess.CompletedProcess(args, process.returncode, "".join(output))
+
+
+@contextlib.contextmanager
+def step(name):
+    started = time.monotonic()
+    print(f"START {name}", flush=True)
+    try:
+        yield
+    except Exception:
+        print(f"FAIL {name} ({time.monotonic() - started:.0f}s)", flush=True)
+        raise
+    print(f"DONE {name} ({time.monotonic() - started:.0f}s)", flush=True)
 
 
 def redact(text):
@@ -207,18 +287,27 @@ def require_release_contracts():
 
 
 def wait_for(name, predicate, seconds=READY_SECONDS):
-    deadline = time.monotonic() + seconds
+    started = time.monotonic()
+    deadline = started + seconds
+    next_update = started + PROGRESS_SECONDS
+    print(f"WAIT {name} (timeout {seconds}s)", flush=True)
     last = None
     while True:
         try:
             if predicate():
+                print(f"READY {name} ({time.monotonic() - started:.0f}s)", flush=True)
                 return
         except PublicAPIGap:
             raise
         except (RuntimeError, urllib.error.URLError, OSError, IndexError, KeyError) as exc:
             last = exc
-        if time.monotonic() >= deadline:
-            raise RuntimeError(f"Timed out waiting for {name}. {last or ''}")
+        now = time.monotonic()
+        if now >= deadline:
+            raise RuntimeError(redact(f"Timed out waiting for {name}. {last or ''}"))
+        if now >= next_update:
+            detail = f"; latest error: {redact(str(last))}" if last else ""
+            print(f"WAIT {name} ({now - started:.0f}s elapsed){detail}", flush=True)
+            next_update = now + PROGRESS_SECONDS
         time.sleep(3)
 
 
@@ -369,7 +458,36 @@ def validate():
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     assert_infrastructure_only(docs)
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    print("Validated all 16 loco.yaml files and infrastructure-only chart", flush=True)
+    validate_local_certificates()
+    print("Validated all 16 loco.yaml files, infrastructure-only chart and local certificates", flush=True)
+
+
+def assert_local_certificates(before, after):
+    expected = copy.deepcopy(before)
+    issuers = [doc for doc in expected if doc.get("kind") == "ClusterIssuer"
+               and doc["metadata"]["name"] == "loco-demo-local"]
+    if len(issuers) != 1:
+        raise RuntimeError("Expected exactly one local demo certificate issuer")
+    issuers[0]["spec"] = {"selfSigned": {}}
+    if after != expected:
+        raise RuntimeError("Local TLS rendering must change only the demo issuer to self-signed")
+    certificates = [doc for doc in after if doc.get("kind") == "Certificate"]
+    if not certificates or any(doc["spec"].get("issuerRef") != {
+            "name": "loco-demo-local", "kind": "ClusterIssuer"} for doc in certificates):
+        raise RuntimeError("Local certificates must reference the self-signed demo issuer")
+
+
+def validate_local_certificates():
+    values = {"agent": {"clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production",
+                        "image": image_values(VERSIONS["loco"]["images"]["agent"])}}
+    write_yaml(STATE / "core-render-values.yaml", values)
+    command = ["helm", "template", "loco-core", CORE / "charts/loco-core", "--namespace", "loco-system",
+               "-f", ROOT / "config/core.yaml", "-f", STATE / "core-render-values.yaml"]
+    before = [doc for doc in yaml.safe_load_all(run(command)) if doc]
+    after = [doc for doc in yaml.safe_load_all(run(command + ["--post-renderer", "local-certificates"])) if doc]
+    assert_local_certificates(before, after)
+    write_yaml(OUT / "local-certificates.yaml", [doc for doc in after
+                                               if doc.get("kind") in ("ClusterIssuer", "Certificate")])
 
 
 def assert_infrastructure_only(docs):
@@ -380,10 +498,11 @@ def assert_infrastructure_only(docs):
 
 
 def helm_install(name, chart, namespace, *values, timeout="10m"):
-    run(["helm", "upgrade", "--install", name, chart, "--namespace", namespace,
-         "--create-namespace", "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT,
-         *values, "--wait", "--timeout", timeout], timeout=READY_SECONDS + 120,
-        log=OUT / f"helm-{name}.log")
+    with step(f"Install Helm release {name} in {namespace}"):
+        run(["helm", "upgrade", "--install", name, chart, "--namespace", namespace,
+             "--create-namespace", "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT,
+             *values, "--wait", "--timeout", timeout], timeout=READY_SECONDS + 120,
+            log=OUT / f"helm-{name}.log", stream=True)
 
 
 def bootstrap_compose():
@@ -444,7 +563,7 @@ def bootstrap_compose():
     write_yaml(STATE / "compose.yaml", {
         "services": services, "volumes": {"postgres-data": {}, "registry-data": {}, "s3-data": {}},
         "networks": {"kind": {"external": True}}})
-    compose("up", "-d", "postgres", "registry", "s3", "dex", timeout=READY_SECONDS)
+    compose("up", "-d", "postgres", "registry", "s3", "dex", timeout=READY_SECONDS, stream=True)
     wait_for("OIDC provider", lambda: urllib.request.urlopen(
         f"http://127.0.0.1:{DEX_PORT}/dex/.well-known/openid-configuration", timeout=5).status == 200)
 
@@ -591,7 +710,7 @@ def install_control_plane():
         "CLICKHOUSE_DB": "loco_obs",
     })
     apply(control_plane_documents())
-    kube("-n", API_NAMESPACE, "rollout", "status", "deployment/loco-demo-api", "--timeout=600s")
+    kube("-n", API_NAMESPACE, "rollout", "status", "deployment/loco-demo-api", "--timeout=600s", stream=True)
     node_ip = run(["docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
                    CLUSTER + "-control-plane"]).strip()
     (STATE / "endpoint.json").write_text(json.dumps({"cliApiUrl": f"http://{node_ip}:{API_NODE_PORT}"}))
@@ -612,9 +731,10 @@ def check_attachment():
 
 def up():
     global INFRA_STARTED
-    prepare()
-    require_release_contracts()
-    validate()
+    with step("Verify release artifacts and application configuration"):
+        prepare()
+        require_release_contracts()
+        validate()
     STATE.mkdir(exist_ok=True)
     clusters = run(["kind", "get", "clusters"]).splitlines()
     if CLUSTER in clusters:
@@ -625,15 +745,18 @@ def up():
         raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
     write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
     INFRA_STARTED = True
-    run(["kind", "create", "cluster", "--name", CLUSTER, "--image", VERSIONS["kindImage"],
-         "--config", ROOT / "config/kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
-        timeout=READY_SECONDS, log=OUT / "kind.log")
+    with step("Create isolated kind cluster"):
+        run(["kind", "create", "cluster", "--name", CLUSTER, "--image", VERSIONS["kindImage"],
+             "--config", ROOT / "config/kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
+            timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
     helm_install("loco-networking", CORE / "charts/loco-networking", "kube-system",
                  "-f", ROOT / "config/networking.yaml")
     for ns in ["loco-system", "observability", "observability-node"]:
         apply({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}})
-    bootstrap_compose()
-    addresses = setup_external_hosts()
+    with step("Start PostgreSQL, registry, source storage and Dex"):
+        bootstrap_compose()
+    with step("Configure private infrastructure DNS and registry access"):
+        addresses = setup_external_hosts()
     c = credentials()
     for name, user, password in [("loco-demo-pull", "nodes", "loco-dev-nodes"),
                                   ("loco-demo-push", "builder", "loco-dev-builder")]:
@@ -656,16 +779,20 @@ def up():
     write_yaml(STATE / "observability.yaml", obs)
     helm_install("loco-obs", CORE / "charts/loco-obs", API_NAMESPACE,
                  "-f", ROOT / "config/observability.yaml", "-f", STATE / "observability.yaml")
-    install_control_plane()
-    create_identity()
+    with step("Start regional control plane and private observability proxy"):
+        install_control_plane()
+    with step("Authenticate demo user and create workspace"):
+        create_identity()
     core = {"agent": {"image": image_values(VERSIONS["loco"]["images"]["agent"]),
                       "clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production"},
             "env": {"CONTROL_PLANE_URL": f"http://loco-demo-api.{API_NAMESPACE}.svc.cluster.local:8000",
                     "AGENT_TOKEN": c["agent"]}}
     write_yaml(STATE / "core.yaml", core)
     helm_install("loco-core", CORE / "charts/loco-core", "loco-system",
-                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml")
-    check_attachment()
+                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml",
+                 "--post-renderer", "local-certificates")
+    with step("Wait for automatic cluster attachment"):
+        check_attachment()
     helm_install("astronomy", CACHE / "charts/opentelemetry-demo", app_namespace(),
                  "-f", ROOT / "config/demo-infrastructure.yaml")
     print("Demo organization, workspace, user, builder worker, Loco charts, and shop infrastructure ready", flush=True)
@@ -701,9 +828,10 @@ def deploy_one(name, resources):
     if APPS[name]["mode"] == "image":
         image = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())["services"][name]["image"]
         image_args = ["--image", image]
-    output = cli("deploy", "--file", f".state/work/{name}/loco.yaml", *image_args,
-                 "--yes", "--confirm-import", "--env", "production",
-                 timeout=BUILD_SECONDS, log=OUT / f"deploy-{name}.log")
+    with step(f"Deploy {name} ({APPS[name]['mode']})"):
+        output = cli("deploy", "--file", f".state/work/{name}/loco.yaml", *image_args,
+                     "--yes", "--confirm-import", "--env", "production",
+                     timeout=BUILD_SECONDS, log=OUT / f"deploy-{name}.log", stream=True)
     if APPS[name]["mode"] == "source":
         builds = [b for b in list_builds(resources[name]) if b["status"] == "BUILD_STATUS_SUCCEEDED"]
         if not builds:

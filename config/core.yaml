@@ -6,6 +6,7 @@ global:
     type: ""
 certManager:
   issuer:
+    name: loco-demo-local
     email: demo@example.test
     server: https://acme-staging-v02.api.letsencrypt.org/directory
 envoyProxy:

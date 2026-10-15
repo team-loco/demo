@@ -1,8 +1,14 @@
 import importlib.util
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stdout
 import io
+import copy
 import json
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
+import threading
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -424,6 +430,118 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertEqual(evidence["clusterKey"], "cluster-uid")
         self.assertEqual(api.call_args.args[0], "loco.resource.v1.ResourceService/ListRegions")
         kube.assert_called_once_with("get", "namespace", "kube-system", "-o", "json")
+
+
+class LocalCertificateTests(unittest.TestCase):
+    def manifests(self):
+        before = [
+            {"kind": "ClusterIssuer", "metadata": {"name": "loco-demo-local"}, "spec": {"acme": {"server": "https://acme.example"}}},
+            {"kind": "Certificate", "spec": {"issuerRef": {"name": "loco-demo-local", "kind": "ClusterIssuer"}}},
+            {"kind": "Deployment", "spec": {"template": {"spec": {"containers": [{"image": "original"}]}}}},
+        ]
+        after = copy.deepcopy(before)
+        after[0]["spec"] = {"selfSigned": {}}
+        return before, after
+
+    def test_local_certificate_issuer_has_no_acme_dependency(self):
+        before, after = self.manifests()
+        demo.assert_local_certificates(before, after)
+        with self.assertRaisesRegex(RuntimeError, "self-signed"):
+            demo.assert_local_certificates(before, before)
+
+    def test_renderer_cannot_modify_controller_workloads(self):
+        before, after = self.manifests()
+        after[2]["spec"]["template"]["spec"]["containers"][0]["image"] = "modified"
+        with self.assertRaisesRegex(RuntimeError, "change only the demo issuer"):
+            demo.assert_local_certificates(before, after)
+
+    def test_certificate_must_reference_the_local_issuer(self):
+        before, after = self.manifests()
+        before[1]["spec"]["issuerRef"]["name"] = "remote"
+        after[1]["spec"]["issuerRef"]["name"] = "remote"
+        with self.assertRaisesRegex(RuntimeError, "must reference"):
+            demo.assert_local_certificates(before, after)
+
+
+class LiveProgressTests(unittest.TestCase):
+    secret = "issued-secret-value"
+
+    def test_redacted_line_is_visible_before_process_exits(self):
+        visible = threading.Event()
+        class LiveOutput(io.StringIO):
+            def write(self, text):
+                result = super().write(text)
+                if "READY [REDACTED]" in self.getvalue():
+                    visible.set()
+                return result
+        output = LiveOutput()
+        code = ("import sys,time; from pathlib import Path; "
+                "sys.stdout.write('READY issued-'); sys.stdout.flush(); time.sleep(.05); "
+                "print('secret-value',flush=True); "
+                "exec('while not Path(sys.argv[1]).exists(): time.sleep(.01)')")
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "secrets.json").write_text(json.dumps({"session": self.secret}))
+            release = directory / "release"
+            logfile = directory / "process.log"
+            with patch.object(demo, "STATE", directory), redirect_stdout(output), ThreadPoolExecutor() as executor:
+                future = executor.submit(demo.run, [sys.executable, "-u", "-c", code, str(release)],
+                                         stream=True, timeout=5, log=logfile)
+                try:
+                    self.assertTrue(visible.wait(3), "subprocess output remained buffered")
+                    self.assertFalse(future.done(), "child must still be running when output appears")
+                finally:
+                    release.touch()
+                result = future.result(timeout=5)
+            self.assertIn(self.secret, result)
+            self.assertNotIn(self.secret, output.getvalue())
+            self.assertIn("READY [REDACTED]", logfile.read_text())
+            self.assertNotIn(self.secret, logfile.read_text())
+
+    def test_timeout_keeps_redacted_live_output_and_log(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "secrets.json").write_text(json.dumps({"session": self.secret}))
+            logfile = directory / "timeout.log"
+            output = io.StringIO()
+            code = "import time; print('starting issued-secret-value',flush=True); time.sleep(10)"
+            with patch.object(demo, "STATE", directory), redirect_stdout(output), \
+                 patch.object(demo, "PROGRESS_SECONDS", .05):
+                with self.assertRaises(subprocess.TimeoutExpired) as raised:
+                    demo.run([sys.executable, "-u", "-c", code], stream=True, timeout=1, log=logfile)
+            self.assertIn("RUN timeout (", output.getvalue())
+            for text in [output.getvalue(), logfile.read_text(), raised.exception.output]:
+                self.assertIn("starting [REDACTED]", text)
+                self.assertNotIn(self.secret, text)
+
+    def test_machine_readable_output_stays_buffered(self):
+        output = io.StringIO()
+        with redirect_stdout(output):
+            result = demo.run([sys.executable, "-c", "print('{\"id\": 1}')"])
+        self.assertEqual(json.loads(result), {"id": 1})
+        self.assertEqual(output.getvalue(), "")
+
+    def test_named_wait_reports_elapsed_time_and_redacted_error(self):
+        attempts = iter([RuntimeError("not ready issued-secret-value"), False, True])
+        def ready():
+            result = next(attempts)
+            if isinstance(result, Exception):
+                raise result
+            return result
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "secrets.json").write_text(json.dumps({"session": self.secret}))
+            output = io.StringIO()
+            with patch.object(demo, "STATE", directory), redirect_stdout(output), \
+                 patch.object(demo.time, "monotonic", side_effect=[0, 15, 31, 32]), \
+                 patch.object(demo.time, "sleep"):
+                demo.wait_for("cluster attachment", ready, seconds=60)
+            text = output.getvalue()
+            self.assertIn("WAIT cluster attachment (15s elapsed)", text)
+            self.assertIn("WAIT cluster attachment (31s elapsed)", text)
+            self.assertIn("READY cluster attachment (32s)", text)
+            self.assertIn("latest error: not ready [REDACTED]", text)
+            self.assertNotIn(self.secret, text)
 
 
 if __name__ == "__main__":
