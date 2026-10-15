@@ -70,7 +70,7 @@ Each service has its own deployment configuration under [`apps/`](apps/). [`apps
 
 Source deployments use the retained upstream Dockerfiles. Prebuilt deployments pass an immutable image reference to `loco deploy --image`. The runner resolves Loco resource IDs to wire private service addresses between applications.
 
-Accounting and quote declare numeric runtime IDs matching the users in their pinned upstream base images: `1654:1654` for accounting's `app` and `82:82` for quote's `www-data`. Loco still enforces non-root execution. These declarations require [numeric runtime user support](https://github.com/team-loco/loco/pull/756) in the CLI, API, controller and CRDs; the current release pins predate that support, so configuration validation cannot pass until compatible artifacts are published and pinned. Other images that default to root still need individual compatibility checks.
+Accounting and quote declare numeric runtime IDs matching the users in their pinned upstream base images: `1654:1654` for accounting's `app` and `82:82` for quote's `www-data`. Loco still enforces non-root execution. The pinned Loco v0.0.112 CLI, API, controller and CRDs support these declarations. Other images that default to root still need individual compatibility checks.
 
 The retained upstream sources are in [`upstream/`](upstream/). Source contexts are staged under `.state/work/<service>/source` with shared build files available. The product-catalog build includes its upstream OpenTelemetry configuration file. See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
