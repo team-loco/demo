@@ -82,6 +82,8 @@ To retain the installation for inspection:
 mise run e2e -- --keep
 ```
 
+Local gateway certificates use a self-signed cert-manager issuer. The runner applies a bundled Helm postrenderer to the demo issuer before installation; it does not contact ACME or require Cloudflare credentials for `.test.local` names.
+
 The phases are also available separately:
 
 ```sh

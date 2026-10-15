@@ -2,6 +2,7 @@ import importlib.util
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 import io
+import copy
 import json
 from pathlib import Path
 import tempfile
@@ -429,6 +430,37 @@ class BootstrapContractTests(unittest.TestCase):
         self.assertEqual(evidence["clusterKey"], "cluster-uid")
         self.assertEqual(api.call_args.args[0], "loco.resource.v1.ResourceService/ListRegions")
         kube.assert_called_once_with("get", "namespace", "kube-system", "-o", "json")
+
+
+class LocalCertificateTests(unittest.TestCase):
+    def manifests(self):
+        before = [
+            {"kind": "ClusterIssuer", "metadata": {"name": "loco-demo-local"}, "spec": {"acme": {"server": "https://acme.example"}}},
+            {"kind": "Certificate", "spec": {"issuerRef": {"name": "loco-demo-local", "kind": "ClusterIssuer"}}},
+            {"kind": "Deployment", "spec": {"template": {"spec": {"containers": [{"image": "original"}]}}}},
+        ]
+        after = copy.deepcopy(before)
+        after[0]["spec"] = {"selfSigned": {}}
+        return before, after
+
+    def test_local_certificate_issuer_has_no_acme_dependency(self):
+        before, after = self.manifests()
+        demo.assert_local_certificates(before, after)
+        with self.assertRaisesRegex(RuntimeError, "self-signed"):
+            demo.assert_local_certificates(before, before)
+
+    def test_renderer_cannot_modify_controller_workloads(self):
+        before, after = self.manifests()
+        after[2]["spec"]["template"]["spec"]["containers"][0]["image"] = "modified"
+        with self.assertRaisesRegex(RuntimeError, "change only the demo issuer"):
+            demo.assert_local_certificates(before, after)
+
+    def test_certificate_must_reference_the_local_issuer(self):
+        before, after = self.manifests()
+        before[1]["spec"]["issuerRef"]["name"] = "remote"
+        after[1]["spec"]["issuerRef"]["name"] = "remote"
+        with self.assertRaisesRegex(RuntimeError, "must reference"):
+            demo.assert_local_certificates(before, after)
 
 
 class LiveProgressTests(unittest.TestCase):

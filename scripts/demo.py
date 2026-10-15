@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import base64
 import contextlib
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -89,6 +90,7 @@ def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=No
         (CACHE / "helm").mkdir(parents=True, exist_ok=True)
         env["HELM_REPOSITORY_CONFIG"] = str(CACHE / "helm/repositories.yaml")
         env["HELM_REPOSITORY_CACHE"] = str(CACHE / "helm/cache")
+        env["HELM_PLUGINS"] = str(ROOT / "scripts/helm-plugins")
     if stream:
         result = run_streamed(args, cwd=cwd, input=input, timeout=timeout, env=env, log=log)
     else:
@@ -456,7 +458,36 @@ def validate():
     docs = [d for d in yaml.safe_load_all(rendered) if d]
     assert_infrastructure_only(docs)
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    print("Validated all 16 loco.yaml files and infrastructure-only chart", flush=True)
+    validate_local_certificates()
+    print("Validated all 16 loco.yaml files, infrastructure-only chart and local certificates", flush=True)
+
+
+def assert_local_certificates(before, after):
+    expected = copy.deepcopy(before)
+    issuers = [doc for doc in expected if doc.get("kind") == "ClusterIssuer"
+               and doc["metadata"]["name"] == "loco-demo-local"]
+    if len(issuers) != 1:
+        raise RuntimeError("Expected exactly one local demo certificate issuer")
+    issuers[0]["spec"] = {"selfSigned": {}}
+    if after != expected:
+        raise RuntimeError("Local TLS rendering must change only the demo issuer to self-signed")
+    certificates = [doc for doc in after if doc.get("kind") == "Certificate"]
+    if not certificates or any(doc["spec"].get("issuerRef") != {
+            "name": "loco-demo-local", "kind": "ClusterIssuer"} for doc in certificates):
+        raise RuntimeError("Local certificates must reference the self-signed demo issuer")
+
+
+def validate_local_certificates():
+    values = {"agent": {"clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production",
+                        "image": image_values(VERSIONS["loco"]["images"]["agent"])}}
+    write_yaml(STATE / "core-render-values.yaml", values)
+    command = ["helm", "template", "loco-core", CORE / "charts/loco-core", "--namespace", "loco-system",
+               "-f", ROOT / "config/core.yaml", "-f", STATE / "core-render-values.yaml"]
+    before = [doc for doc in yaml.safe_load_all(run(command)) if doc]
+    after = [doc for doc in yaml.safe_load_all(run(command + ["--post-renderer", "local-certificates"])) if doc]
+    assert_local_certificates(before, after)
+    write_yaml(OUT / "local-certificates.yaml", [doc for doc in after
+                                               if doc.get("kind") in ("ClusterIssuer", "Certificate")])
 
 
 def assert_infrastructure_only(docs):
@@ -758,7 +789,8 @@ def up():
                     "AGENT_TOKEN": c["agent"]}}
     write_yaml(STATE / "core.yaml", core)
     helm_install("loco-core", CORE / "charts/loco-core", "loco-system",
-                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml")
+                 "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml",
+                 "--post-renderer", "local-certificates")
     with step("Wait for automatic cluster attachment"):
         check_attachment()
     helm_install("astronomy", CACHE / "charts/opentelemetry-demo", app_namespace(),
