@@ -38,7 +38,8 @@
     "astronomy-db": "postgres:18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636",
     "busybox": "busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
     "flagd-ui": "ghcr.io/open-telemetry/demo:3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062",
-    "dex": "ghcr.io/dexidp/dex:v2.46.0@sha256:933fcd3f523338c847b88ef84a7145fb2fcb7b9917f08418612afeaaa2001777"
+    "dex": "ghcr.io/dexidp/dex:v2.46.0@sha256:933fcd3f523338c847b88ef84a7145fb2fcb7b9917f08418612afeaaa2001777",
+    "metrics-server": "registry.k8s.io/metrics-server/metrics-server:v0.9.0@sha256:d9862115e7c7881280d3d75ca26bda8ffc0fc213315979575bf23ce9826205c0"
   },
   "apps": {
     "ad": "ghcr.io/open-telemetry/demo:3.1.0-ad@sha256:dfd7a4697116d7f961f2c6e8be1bd187f2af7555d6d4138c016097921d7c7ed0",
@@ -49,5 +50,10 @@
     "frontend-proxy": "ghcr.io/open-telemetry/demo:3.1.0-frontend-proxy@sha256:fd4da88bfeaadd9437a4ee00f708e129a9eedb9c48874cea8e94b034983280a1",
     "image-provider": "ghcr.io/open-telemetry/demo:3.1.0-image-provider@sha256:46d1a7e95109c0064122ca0bfb49cd05191fb90a6264b6be508e0d98f2c963f1",
     "load-generator": "ghcr.io/open-telemetry/demo:3.1.0-load-generator@sha256:b130d6cee6cb36a2799787a553168811e3ccc5408fe5dad0bc4b4d8302c7a63c"
+  },
+  "metricsServer": {
+    "chart": "3.14.0",
+    "chartUrl": "https://github.com/kubernetes-sigs/metrics-server/releases/download/metrics-server-helm-chart-3.14.0/metrics-server-3.14.0.tgz",
+    "chartSha256": "c2ca1185c01e6e7f53dd1b7d131f0c9b3fa50e003ed068b784563a1b5a3422a1"
   }
 }

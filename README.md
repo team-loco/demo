@@ -86,6 +86,8 @@ To retain the installation for inspection:
 mise run e2e -- --keep
 ```
 
+The runner installs Kubernetes Metrics Server for the collector's CPU autoscaler and waits for a CPU sample and an active HPA. Metrics Server supplies Kubernetes' resource metrics API; application observability continues through OpenTelemetry Collector and ClickHouse. Metrics Server connects to node IP addresses, which kind's kubelet certificates do not include. The local configuration disables kubelet certificate verification for Metrics Server; this setting is confined to [`config/metrics-server.yaml`](config/metrics-server.yaml).
+
 The `loco-control-plane` Helm chart installs the API, dashboard, and private observability proxy. `loco-core` installs the worker agent and Gateway, with `certManager.issuer.type=selfSigned` for local certificates. PostgreSQL, registry, source storage, and Dex remain external Compose fixtures.
 
 The runner verifies the dashboard HTML, its runtime configuration, and Config RPC through the dashboard's own `/api` route before authenticating. Agent, CLI, and telemetry queries use that Gateway route; the API and observability proxy have no public Services. To open the retained dashboard, resolve `app.platform.test.local` to `127.0.0.1` on the host and visit `http://app.platform.test.local:18000`.
