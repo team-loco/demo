@@ -2,6 +2,8 @@ version: 1
 partial: cart
 services:
   cart:
+    runAsUser: 1654
+    runAsGroup: 1654
     port: 7070
     env:
       ASPNETCORE_URLS: http://*:7070

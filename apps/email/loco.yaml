@@ -2,6 +2,8 @@ version: 1
 partial: email
 services:
   email:
+    runAsUser: 65534
+    runAsGroup: 65534
     port: 6060
     env:
       APP_ENV: production

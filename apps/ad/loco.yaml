@@ -2,6 +2,8 @@ version: 1
 partial: ad
 services:
   ad:
+    runAsUser: 1000
+    runAsGroup: 1000
     port: 9555
     env:
       AD_PORT: '9555'
