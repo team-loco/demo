@@ -256,6 +256,32 @@ class HarnessTests(unittest.TestCase):
         self.assertEqual(call.call_args.args[0], "QueryLogs")
         self.assertEqual(call.call_args.args[1]["resourceIds"], ["payment"])
 
+    def test_checkout_logs_require_otlp_and_stdout_for_the_same_order(self):
+        otlp = {"resourceId": "checkout-id", "body": "order-id"}
+        stdout = {"resourceId": "email-id", "body": "order-id",
+                  "logAttributes": {"log.file.path": "/logs/container.log", "log.iostream": "stdout"}}
+        cases = [([otlp], False), ([stdout], False),
+                 ([otlp, {**stdout, "body": "different-order"}], False),
+                 ([otlp, {**stdout, "logAttributes": {"log.file.path": "/logs/container.log", "log.iostream": "stderr"}}], False),
+                 ([otlp, stdout], True)]
+        def check_once(name, predicate, seconds):
+            if not predicate():
+                raise RuntimeError("Required log sources missing")
+        for entries, succeeds in cases:
+            with self.subTest(entries=entries), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp)
+                (path / "resources.json").write_text(json.dumps({"checkout": "checkout-id", "email": "email-id"}))
+                (path / "order.json").write_text(json.dumps({"orderId": "order-id"}))
+                with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                     patch.object(demo, "query_logs", return_value=entries), \
+                     patch.object(demo, "wait_for", side_effect=check_once):
+                    if succeeds:
+                        demo.check_logs()
+                    else:
+                        with self.assertRaisesRegex(RuntimeError, "Required log sources missing"):
+                            demo.check_logs()
+                self.assertEqual((path / "logs-api.json").exists(), succeeds)
+
     def test_metrics_use_public_proxy_api(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
