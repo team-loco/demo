@@ -42,7 +42,7 @@ The pinned platform images include Linux AMD64 and ARM64 manifests. GitHub Actio
 | Cluster attachment | Attach the worker cluster using an operator-provided shared secret and its Kubernetes identity. |
 | Builds and deployments | Deploy all 16 services, verify eight source builds and eight prebuilt deployments, and check resource health. |
 | Application behavior | Browse the shop, populate a cart, complete checkout, and observe Kafka consumption. |
-| Logs | Retrieve application logs through `QueryLogs`, scoped to the demo workspace, environment, and resources. |
+| Logs | Retrieve the same checkout order from both SDK-pushed OTLP logs and collected container stdout through `QueryLogs`, scoped to the demo workspace, environment, and resources. |
 | Metrics | Confirm the payment transaction counter increases after checkout through `QueryMetrics`. |
 | Traces | Retrieve a connected checkout trace spanning frontend, checkout, payment, shipping, and product catalog through `QueryTraces`. |
 | Access control | Reject log, metric, and trace queries outside the credential's workspace. |
