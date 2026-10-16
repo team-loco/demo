@@ -355,6 +355,30 @@ class PublicTelemetryTests(unittest.TestCase):
                                      {**request, "regions": [demo.REGION]}, token="api-issued-workspace-token")
         self.assertNotIn("regions", request)
 
+    def test_logs_use_supported_filters_and_select_environment_across_pages(self):
+        wanted = {"resourceId": "checkout-id", "body": "order", "resourceAttributes": {"loco.environment.id": "environment"}}
+        other = {"resourceId": "checkout-id", "body": "other order", "resourceAttributes": {"loco.environment.id": "other"}}
+        responses = [{"entries": [other], "nextCursor": "next"}, {"entries": [wanted]}]
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+             patch.object(demo, "observability_rpc", side_effect=responses) as call:
+            entries = demo.query_logs(["checkout-id"])
+        self.assertEqual(entries, [wanted])
+        self.assertEqual(call.call_count, 2)
+        for args in call.call_args_list:
+            self.assertEqual(args.args[0], "QueryLogs")
+            request = args.args[1]
+            self.assertEqual(request["workspaceId"], "workspace")
+            self.assertEqual(request["resourceIds"], ["checkout-id"])
+            self.assertNotIn("labels", request)
+        self.assertEqual(call.call_args.args[1]["cursor"], "next")
+
+    def test_logs_without_environment_identity_cannot_prove_order_consumption(self):
+        with patch.object(demo, "workspace_id", return_value="workspace"), \
+             patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+             patch.object(demo, "observability_rpc", return_value={"entries": [{"resourceId": "checkout-id", "body": "order-id"}]}):
+            self.assertFalse(demo.order_in_logs(["checkout-id"], "order-id"))
+
     def test_metric_and_trace_requests_use_their_actual_region_contracts(self):
         with patch.object(demo, "api", return_value={}) as call:
             demo.observability_rpc("QueryMetrics", {"workspaceId": "workspace"}, token="issued-token")

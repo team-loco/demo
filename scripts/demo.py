@@ -965,15 +965,19 @@ def traffic():
 
 def query_logs(resource_ids):
     now = dt.datetime.now(dt.UTC)
+    environment_id = identity()["environmentId"]
     request = {"workspaceId": workspace_id(), "resourceIds": resource_ids,
                "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
-               "labels": {"loco.environment.id": identity()["environmentId"]},
                "limit": 200, "order": "LOG_ORDER_NEWEST_FIRST"}
     entries = []
     seen = set()
     while True:
         response = observability_rpc("QueryLogs", request)
-        entries.extend(response.get("entries", []))
+        page = response.get("entries", [])
+        if any(entry["resourceId"] not in resource_ids for entry in page):
+            raise RuntimeError("QueryLogs returned a resource outside the requested scope")
+        entries.extend(entry for entry in page
+                       if entry.get("resourceAttributes", {}).get("loco.environment.id") == environment_id)
         cursor = response.get("nextCursor")
         if not cursor:
             return entries
@@ -985,8 +989,6 @@ def query_logs(resource_ids):
 
 def order_in_logs(resource_ids, order_id):
     entries = query_logs(resource_ids)
-    if any(entry["resourceId"] not in resource_ids for entry in entries):
-        raise RuntimeError("QueryLogs returned a resource outside the requested scope")
     return any(order_id in entry.get("body", "") + json.dumps(entry.get("logAttributes", {}))
                for entry in entries)
 
