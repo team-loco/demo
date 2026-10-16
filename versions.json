@@ -1,23 +1,23 @@
 {
   "loco": {
-    "cli": "v0.0.112",
-    "commit": "5efe322dc3d21415595c042111af41c76be7550b",
+    "cli": "v0.0.113",
+    "commit": "576d4797d5488905858a490f55092ac45427b7a3",
     "chartSource": "platform-commit",
     "images": {
-      "agent": "ghcr.io/team-loco/loco-agent:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:517e7d143c9e42ed421222a61c685b09616911aa638df985336f71f404c6265d",
-      "obs-proxy": "ghcr.io/team-loco/loco-obs-proxy:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:9d55418ae68a25d616f123912d193355757a2ef6cfea0217621b00a880d89c57",
-      "builder": "ghcr.io/team-loco/loco-builder:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:ff92fe4763a1401213b95096befe24cd8cd5aefbbde5e7f6fef4e172fe13c867",
-      "api": "ghcr.io/team-loco/loco-api:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:8b62829ef83a134dbe46bf7fcd6812ca5f587bbc2ca982283f3ee83db9d57b23",
-      "ui": "ghcr.io/team-loco/loco-ui:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:860264a7be2551cacebfcba58ebe2c00191accfbfee7a07191778127c1be448a",
-      "controller": "ghcr.io/team-loco/loco-controller:sha-5efe322dc3d21415595c042111af41c76be7550b@sha256:ffe18f43c9551eb57da302639dd6545b4a603e96e40d3e23ade756083a1952e2"
+      "builder": "ghcr.io/team-loco/loco-builder:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:b89b4fc25c20eed1232e981e3b96e091963e9a5a8e21afaeaed69e31d60cb292",
+      "controller": "ghcr.io/team-loco/loco-controller:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:30497d3b1d3d7a3dd747d97db11ee9c171b3d8f13c55e9721e04cec3b1ee9b9d",
+      "obs-proxy": "ghcr.io/team-loco/loco-obs-proxy:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:6ee9c63aaab8b622cac640f5c6b0b957029f62d76166f94451479cab4dc0ab27",
+      "agent": "ghcr.io/team-loco/loco-agent:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:b2b5c8edbc7407291c182d7163acd09c83dd1604d2af01939c2f78fba379f0eb",
+      "ui": "ghcr.io/team-loco/loco-ui:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:379b0f0c3a3e230887939bbc156e92b80e0acfe83297e9c5c1a4e926a9e34a0b",
+      "api": "ghcr.io/team-loco/loco-api:sha-8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c@sha256:5a66408540e70fbfba64c18e4bf49b22fbfffb449c72856189b415348c9a79ab"
     },
     "cliChecksums": {
-      "loco-darwin-amd64": "f2b502946f851b45abd4294b2cbb004eeacb72b3c82472678bea5ba857a10b94",
-      "loco-darwin-arm64": "27f2e0d378297f5f59e9e4ad42649701db8d4098f3447b7e3a553b0f6e659823",
-      "loco-linux-amd64": "804564cdfc09cb69109e0b0bdcc322731ee32f56afeaa08a31eea8e4582247f9",
-      "loco-linux-arm64": "a5924c45c5ccbeb378ecd578b2b51a43764803be7694c466787b4780f9eb9759"
+      "loco-darwin-amd64": "76b9842dca65d42e730565d334094bcd16ff8dfb71e3c38e17609ba93b7e906e",
+      "loco-darwin-arm64": "da91015f1943839cd31ca5fd46b31e09ad9c70231485aaec533f258fe815e3c9",
+      "loco-linux-amd64": "a0645f7c3528f71a3316fef29af73c4247514f4d105efa9cc56cd23b33492f94",
+      "loco-linux-arm64": "a612c79da119b2b384295486ee92c683fd223027e179e533eb2493eb90a7c9b4"
     },
-    "platformCommit": "5efe322dc3d21415595c042111af41c76be7550b"
+    "platformCommit": "8ae4c762821b607aa5bf00da8d136bb8c1ed2f9c"
   },
   "upstream": {
     "release": "3.1.0",

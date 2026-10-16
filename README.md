@@ -30,7 +30,7 @@ mise run e2e
 
 `setup` installs pinned tools and Python dependencies and prepares the upstream sources and Loco release artifacts. `test` runs the runner's unit tests. `validate` checks the application configurations and rendered infrastructure. `e2e` provisions the local installation and runs the complete deployment and observability test.
 
-**Current status:** the runner pins published Loco v0.0.112 CLI binaries and six matching platform images from commit `5efe322d`. This includes local Gateway Service configuration and numeric runtime user support. Setup and chart/application configuration checks pass; the complete 16-service E2E has not passed.
+The runner pins published Loco v0.0.113 CLI binaries and six platform images from commit `8ae4c762`. Local Linux ARM64 validation covers setup, all application configurations, chart rendering, and deployment of all 16 services on a retained installation. Fresh infrastructure provisioning remains a separate check.
 
 The pinned platform images include Linux AMD64 and ARM64 manifests. GitHub Actions uses an AMD64 runner. A native Apple Silicon run also requires compatible application images.
 
@@ -70,7 +70,7 @@ Each service has its own deployment configuration under [`apps/`](apps/). [`apps
 
 Source deployments use the retained upstream Dockerfiles. Prebuilt deployments pass an immutable image reference to `loco deploy --image`. The runner resolves Loco resource IDs to wire private service addresses between applications.
 
-Services whose images default to root or declare a named user specify positive numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`. The IDs use existing image accounts where available, including .NET's `app`, quote's `www-data`, and the proxy's `envoy`. Currency, email, recommendation, and load-generator run as `65534:65534`. Loco still enforces non-root execution. The pinned Loco v0.0.112 CLI, API, controller and CRDs support these declarations.
+Services whose images default to root or declare a named user specify positive numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`. The IDs use existing image accounts where available, including .NET's `app`, quote's `www-data`, and the proxy's `envoy`. Currency, email, recommendation, and load-generator run as `65534:65534`. Loco still enforces non-root execution. The pinned CLI, API, controller and CRDs support these declarations.
 
 The retained upstream sources are in [`upstream/`](upstream/). Source contexts are staged under `.state/work/<service>/source` with shared build files available. The product-catalog build includes its upstream OpenTelemetry configuration file. See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
