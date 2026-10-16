@@ -88,7 +88,7 @@ mise run e2e -- --keep
 
 The `loco-control-plane` Helm chart installs the API, dashboard, and private observability proxy. `loco-core` installs the worker agent and Gateway, with `certManager.issuer.type=selfSigned` for local certificates. PostgreSQL, registry, source storage, and Dex remain external Compose fixtures.
 
-The runner verifies the dashboard HTML, its runtime configuration, and Config RPC through the dashboard's own `/api` route before authenticating. Agent, CLI, and telemetry queries use that Gateway route; the API and observability proxy have no public Services. To open the retained dashboard, resolve `app.platform.test.local` to `127.0.0.1` on the host and visit `http://app.platform.test.local:18000`.
+The runner verifies the dashboard HTML, its runtime configuration, and Config RPC through the dashboard's own `/api` route before authenticating. Agent, CLI, and telemetry queries use that Gateway route; the API and observability proxy have no public Services. To open the retained dashboard, resolve `app.platform.test.local` to `127.0.0.1` on the host and visit `http://app.platform.test.local:18000`. Sign in with the local fixture account `demo@example.test` and password `carolpw`. Dex discovery, login, and token exchange use `/dex` on the same Gateway hostname. The API verifies those tokens through Dex's internal JWKS endpoint.
 
 The phases are also available separately:
 

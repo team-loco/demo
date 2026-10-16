@@ -43,6 +43,7 @@ GATEWAY_NODE_PORT = 30080
 DASHBOARD_HOST = "app.platform.test.local"
 CLI_PORT = 18000
 DEX_PORT = 18056
+DEX_ISSUER = f"http://{DASHBOARD_HOST}:{CLI_PORT}/dex"
 READY_SECONDS = 600
 TELEMETRY_SECONDS = 240
 BUILD_SECONDS = 2100
@@ -560,7 +561,10 @@ def bootstrap_compose():
         "DATABASE_URL": f"postgresql://loco_demo:{c['database']}@loco-demo-postgres:5432/loco_demo?sslmode=disable",
         "APP_PORT": "0.0.0.0:8000", "APP_ENV": "test", "LOG_LEVEL": "debug",
         "DEFAULT_PLATFORM_DOMAIN": "demo.test.local",
-        "AUTH_ISSUERS": json.dumps([{"issuer": "http://loco-demo-dex:5556/dex", "audience": "loco"}]),
+        "AUTH_ISSUERS": json.dumps([{
+            "issuer": DEX_ISSUER, "jwksUrl": "http://loco-demo-dex:5556/dex/keys", "audience": "loco",
+            "web": {"clientId": "loco", "scopes": "openid email profile"},
+        }]),
         "LOCO_AGENT_CONNECTION_SECRETS": c["agent"],
         "WEB_URL": f"http://{DASHBOARD_HOST}:{CLI_PORT}",
         "LOCO_REGISTRY_HOST": "loco-demo-registry:5000",
@@ -574,8 +578,11 @@ def bootstrap_compose():
     (STATE / "api-env.json").write_text(json.dumps(api_env))
     (STATE / "api-env.json").chmod(0o600)
     dex = yaml.safe_load((CORE / "env/conformance/dex.yaml").read_text())
-    dex["issuer"] = "http://loco-demo-dex:5556/dex"
-    dex["staticClients"][0]["redirectURIs"] = [f"http://{DASHBOARD_HOST}:{CLI_PORT}/auth/callback"]
+    dex["issuer"] = DEX_ISSUER
+    dex["staticClients"] = [{
+        "id": "loco", "name": "Loco Demo", "public": True,
+        "redirectURIs": [f"http://{DASHBOARD_HOST}:{CLI_PORT}/auth/callback"],
+    }]
     dex["staticPasswords"][0]["email"] = "demo@example.test"
     dex["staticPasswords"][0]["username"] = "demo"
     write_yaml(STATE / "dex.yaml", dex)
@@ -596,7 +603,7 @@ def bootstrap_compose():
 
 def create_identity():
     form = urllib.parse.urlencode({
-        "grant_type": "password", "client_id": "loco", "client_secret": "loco-conformance",
+        "grant_type": "password", "client_id": "loco",
         "username": "demo@example.test", "password": "carolpw", "scope": "openid email profile",
     }).encode()
     request = urllib.request.Request(f"http://127.0.0.1:{DEX_PORT}/dex/token", data=form,
@@ -706,6 +713,25 @@ def install_control_plane():
                  "-f", STATE / "control-plane.yaml")
 
 
+def install_identity_route(address):
+    name = "loco-demo-dex"
+    apply({"apiVersion": "v1", "kind": "Service",
+           "metadata": {"name": name, "namespace": API_NAMESPACE},
+           "spec": {"ports": [{"name": "http", "port": 5556, "targetPort": 5556}]}})
+    apply({"apiVersion": "discovery.k8s.io/v1", "kind": "EndpointSlice",
+           "metadata": {"name": name, "namespace": API_NAMESPACE,
+                        "labels": {"kubernetes.io/service-name": name, "endpointslice.kubernetes.io/managed-by": PROJECT}},
+           "addressType": "IPv4", "ports": [{"name": "http", "port": 5556, "protocol": "TCP"}],
+           "endpoints": [{"addresses": [address], "conditions": {"ready": True}}]})
+    apply({"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute",
+           "metadata": {"name": name, "namespace": API_NAMESPACE},
+           "spec": {"parentRefs": [{"name": "eg", "namespace": "loco-system"}],
+                    "hostnames": [DASHBOARD_HOST], "rules": [{
+                        "matches": [{"path": {"type": "PathPrefix", "value": "/dex"}}],
+                        "backendRefs": [{"name": name, "port": 5556}],
+                    }]}})
+
+
 def dashboard_get(path):
     request = urllib.request.Request(f"http://127.0.0.1:{CLI_PORT}" + path,
                                      headers={"Host": DASHBOARD_HOST})
@@ -727,6 +753,13 @@ def check_dashboard():
     config = api("loco.config.v1.ConfigService/GetConfig", {}, token=None)
     if "serviceDefaults" not in config:
         raise RuntimeError("Dashboard /api route did not reach the Config RPC")
+    auth = config.get("auth", {})
+    if auth.get("issuer") != DEX_ISSUER or auth.get("clientId") != "loco":
+        raise RuntimeError("Dashboard Config RPC does not configure demo browser sign-in")
+    discovery, _ = dashboard_get("/dex/.well-known/openid-configuration")
+    if json.loads(discovery).get("issuer") != DEX_ISSUER:
+        raise RuntimeError("Dashboard Gateway does not serve the demo OIDC discovery document")
+    (OUT / "dashboard-oidc.json").write_text(discovery)
     (OUT / "dashboard.html").write_text(html)
     (OUT / "dashboard-runtime.js").write_text(runtime)
     (OUT / "dashboard-config.json").write_text(json.dumps(config, indent=2) + "\n")
@@ -813,6 +846,7 @@ def up():
                  "-f", ROOT / "config/core.yaml", "-f", STATE / "core.yaml")
     with step("Install regional API, dashboard and private observability proxy"):
         install_control_plane()
+        install_identity_route(addresses["loco-demo-dex"])
     with step("Verify dashboard and same-origin public API routing"):
         connect_gateway()
     with step("Authenticate demo user and create workspace"):
