@@ -264,7 +264,7 @@ class HarnessTests(unittest.TestCase):
             with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
                  patch.object(demo, "workspace_id", return_value="ws"), \
                  patch.object(demo, "identity", return_value={"environmentId": "env"}), \
-                 patch.object(demo, "observability_rpc", return_value={"series": [{"resourceId": "payment-id", "points": [{"value": 1}]}]}) as call:
+                 patch.object(demo, "observability_rpc", return_value={"series": [{"resourceId": "payment-id", "points": [{"timestamp": "2026-10-16T06:09:00Z", "value": 1}]}]}) as call:
                 demo.check_metrics()
             self.assertEqual(call.call_args.args[0], "QueryMetrics")
             self.assertEqual(call.call_args.args[1]["metricName"], "demo.payment.transactions")
@@ -444,6 +444,47 @@ class PublicTelemetryTests(unittest.TestCase):
                 demo.check_traces()
             self.assertEqual(call.call_count, 2)
             self.assertEqual(json.loads((path / "traces-api.json").read_text())["traceId"], self.trace_id)
+
+    def test_payment_counter_uses_latest_sample_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
+            response = {"series": [{"resourceId": "payment-id", "points": [
+                {"timestamp": "2026-10-16T06:05:00Z", "value": 89},
+                {"timestamp": "2026-10-16T06:07:00Z", "value": 2},
+                {"timestamp": "2026-10-16T06:09:00Z", "value": 6},
+            ]}]}
+            with patch.object(demo, "STATE", path), \
+                 patch.object(demo, "workspace_id", return_value="workspace"), \
+                 patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
+                 patch.object(demo, "observability_rpc", return_value=response) as call:
+                self.assertEqual(demo.payment_counter()[0], 6)
+            self.assertEqual(call.call_args.args[1]["intervalSeconds"], 1)
+
+    def test_counter_reset_requires_a_subsequent_increase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "metric-baseline.json").write_text(json.dumps({"value": 89}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "payment_counter", side_effect=[(2, {}), (2, {}), (3, {})]) as call, \
+                 patch.object(demo.time, "sleep"):
+                demo.check_metrics()
+            self.assertEqual(call.call_count, 3)
+            evidence = json.loads((path / "metrics-api.json").read_text())
+            self.assertEqual(evidence["baseline"], 2)
+            self.assertEqual(evidence["observed"], 3)
+
+    def test_counter_reset_alone_does_not_count_as_an_increase(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / "metric-baseline.json").write_text(json.dumps({"value": 89}))
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "payment_counter", return_value=(2, {})), \
+                 patch.object(demo.time, "sleep"), \
+                 patch.object(demo.time, "monotonic", side_effect=[0, 0, demo.TELEMETRY_SECONDS + 1]):
+                with self.assertRaisesRegex(RuntimeError, "Timed out"):
+                    demo.check_metrics()
+            self.assertFalse((path / "metrics-api.json").exists())
 
     def test_existing_counter_value_does_not_count_as_an_increase(self):
         with tempfile.TemporaryDirectory() as tmp:

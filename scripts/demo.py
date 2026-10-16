@@ -1009,20 +1009,25 @@ def payment_counter():
         "workspaceId": workspace_id(), "resourceIds": [resources["payment"]],
         "environmentId": identity()["environmentId"], "metricName": "demo.payment.transactions",
         "startTime": (now - dt.timedelta(minutes=10)).isoformat(), "endTime": now.isoformat(),
-        "intervalSeconds": 60, "aggregation": "max"})
+        "intervalSeconds": 1, "aggregation": "max"})
     series = response.get("series", [])
     if any(s["resourceId"] != resources["payment"] for s in series):
         raise RuntimeError("QueryMetrics returned a resource outside the requested scope")
-    values = [float(point["value"]) for item in series for point in item.get("points", [])]
-    if any(not math.isfinite(value) or value < 0 for value in values):
+    points = [point for item in series for point in item.get("points", [])]
+    if any(not math.isfinite(float(point["value"])) or float(point["value"]) < 0 for point in points):
         raise RuntimeError("QueryMetrics returned an invalid payment counter value")
-    return max(values, default=0), response
+    latest = max(points, key=lambda point: dt.datetime.fromisoformat(point["timestamp"]), default=None)
+    return float(latest["value"]) if latest else 0, response
 
 
 def check_metrics():
     baseline = json.loads((STATE / "metric-baseline.json").read_text())["value"]
     def observed():
+        nonlocal baseline
         value, response = payment_counter()
+        if value < baseline:
+            baseline = value
+            return False
         if value <= baseline:
             return False
         (OUT / "metrics-api.json").write_text(json.dumps({
