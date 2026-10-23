@@ -1192,20 +1192,23 @@ def check_observability_scope():
     other_workspace = api("loco.workspace.v1.WorkspaceService/CreateWorkspace", {
         "orgId": identity()["orgId"], "name": "telemetry-isolation-" + secrets.token_hex(4),
     })["workspaceId"]
-    now = dt.datetime.now(dt.UTC)
-    for method in ["QueryLogs", "QueryMetrics", "QueryTraces"]:
-        request = {"workspaceId": other_workspace,
-                   "startTime": (now - dt.timedelta(minutes=1)).isoformat(), "endTime": now.isoformat()}
-        if method == "QueryMetrics":
-            request.update({"metricName": "demo.payment.transactions", "intervalSeconds": 60, "aggregation": "max"})
-        try:
-            observability_rpc(method, request)
-        except RPCError as exc:
-            if exc.code != "permission_denied" or exc.status != 403:
-                raise RuntimeError(f"{method} did not enforce workspace authorization: {exc}") from exc
-        else:
-            raise RuntimeError(f"{method} allowed a token scoped to another workspace")
-    return "Regional API rejects all three telemetry queries for a workspace outside the issued token scope"
+    try:
+        now = dt.datetime.now(dt.UTC)
+        for method in ["QueryLogs", "QueryMetrics", "QueryTraces"]:
+            request = {"workspaceId": other_workspace,
+                       "startTime": (now - dt.timedelta(minutes=1)).isoformat(), "endTime": now.isoformat()}
+            if method == "QueryMetrics":
+                request.update({"metricName": "demo.payment.transactions", "intervalSeconds": 60, "aggregation": "max"})
+            try:
+                observability_rpc(method, request)
+            except RPCError as exc:
+                if exc.code != "permission_denied" or exc.status != 403:
+                    raise RuntimeError(f"{method} did not enforce workspace authorization: {exc}") from exc
+            else:
+                raise RuntimeError(f"{method} allowed a token scoped to another workspace")
+        return "Regional API rejects all three telemetry queries for a workspace outside the issued token scope"
+    finally:
+        api("loco.workspace.v1.WorkspaceService/DeleteWorkspace", {"workspaceId": other_workspace})
 
 
 def check_kafka():

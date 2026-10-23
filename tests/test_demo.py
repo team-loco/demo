@@ -523,6 +523,23 @@ class PublicTelemetryTests(unittest.TestCase):
                     demo.check_metrics()
             self.assertFalse((path / "metrics-api.json").exists())
 
+    def test_scope_check_removes_only_its_workspace_on_success_and_failure(self):
+        cases = [(demo.RPCError("query", 403, {"code": "permission_denied"}), True),
+                 (None, False), (demo.RPCError("query", 503, {"code": "unavailable"}), False)]
+        for error, succeeds in cases:
+            with self.subTest(error=error), \
+                 patch.object(demo, "identity", return_value={"orgId": "org"}), \
+                 patch.object(demo, "api", side_effect=[{"workspaceId": "temporary-workspace"}, {}]) as api, \
+                 patch.object(demo, "observability_rpc", side_effect=error, return_value={}):
+                if succeeds:
+                    demo.check_observability_scope()
+                else:
+                    with self.assertRaises(RuntimeError):
+                        demo.check_observability_scope()
+                self.assertEqual(api.call_count, 2)
+                self.assertEqual(api.call_args.args, ("loco.workspace.v1.WorkspaceService/DeleteWorkspace",
+                                                     {"workspaceId": "temporary-workspace"}))
+
     def test_scope_checks_require_permission_denied_not_missing_api(self):
         with patch.object(demo, "identity", return_value={"orgId": "org"}), \
              patch.object(demo, "api", return_value={"workspaceId": "other-workspace"}):
