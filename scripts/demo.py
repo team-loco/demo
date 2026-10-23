@@ -987,19 +987,29 @@ def query_logs(resource_ids):
         request["cursor"] = cursor
 
 
+def order_log_sources(resource_ids, order_id):
+    sources = set()
+    for entry in query_logs(resource_ids):
+        attributes = entry.get("logAttributes", {})
+        if order_id not in entry.get("body", "") + json.dumps(attributes):
+            continue
+        source = attributes.get("log.iostream", "file") if attributes.get("log.file.path") else "otlp"
+        sources.add(source)
+    return sources
+
+
 def order_in_logs(resource_ids, order_id):
-    entries = query_logs(resource_ids)
-    return any(order_id in entry.get("body", "") + json.dumps(entry.get("logAttributes", {}))
-               for entry in entries)
+    return bool(order_log_sources(resource_ids, order_id))
 
 
 def check_logs():
     resources = json.loads((STATE / "resources.json").read_text())
     order_id = json.loads((STATE / "order.json").read_text())["orderId"]
     ids = [resources[n] for n in ["checkout", "email"]]
-    wait_for("checkout order logs through QueryLogs", lambda: order_in_logs(ids, order_id), TELEMETRY_SECONDS)
+    wait_for("checkout OTLP and stdout order logs through QueryLogs",
+             lambda: {"otlp", "stdout"}.issubset(order_log_sources(ids, order_id)), TELEMETRY_SECONDS)
     (OUT / "logs-api.json").write_text(redact(json.dumps(query_logs(ids), indent=2)) + "\n")
-    return "QueryLogs returns the checkout order with the requested resource scope"
+    return "QueryLogs returns the same checkout order from OTLP and container stdout in the requested scope"
 
 
 def payment_counter():
