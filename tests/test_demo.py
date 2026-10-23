@@ -163,6 +163,48 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(head, old)
             self.assertEqual((cache / "release.txt").read_text(), "local changes")
 
+    def test_demo_configures_browser_and_api_for_the_same_public_oidc_client(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            core = path / "core"
+            (core / "env/conformance").mkdir(parents=True)
+            (core / "compose.yaml").write_text(yaml.safe_dump({"services": {
+                name: {"image": "unused"} for name in ["postgres", "registry", "s3"]}}))
+            (core / "env/conformance/dex.yaml").write_text(yaml.safe_dump({
+                "web": {"http": "0.0.0.0:5556"},
+                "staticClients": [{"id": "loco", "secret": "private-client-secret"}],
+                "staticPasswords": [{"email": "fixture", "username": "fixture"}],
+            }))
+            with patch.object(demo, "STATE", path / "state"), patch.object(demo, "CORE", core), \
+                 patch.object(demo, "compose"), patch.object(demo, "wait_for"):
+                demo.bootstrap_compose()
+            env = json.loads((path / "state/api-env.json").read_text())
+            issuer = json.loads(env["AUTH_ISSUERS"])[0]
+            self.assertEqual(issuer["issuer"], f"http://{demo.DASHBOARD_HOST}:{demo.CLI_PORT}/dex")
+            self.assertEqual(issuer["jwksUrl"], "http://loco-demo-dex:5556/dex/keys")
+            self.assertEqual(issuer["web"]["clientId"], "loco")
+            dex = yaml.safe_load((path / "state/dex.yaml").read_text())
+            self.assertEqual(dex["issuer"], issuer["issuer"])
+            client = dex["staticClients"][0]
+            self.assertTrue(client["public"])
+            self.assertNotIn("secret", client)
+            origin = f"http://{demo.DASHBOARD_HOST}:{demo.CLI_PORT}"
+            self.assertEqual(client["redirectURIs"], [origin + "/auth/callback"])
+            self.assertNotIn("allowedOrigins", dex["web"])
+
+    def test_oidc_provider_uses_same_origin_gateway_route(self):
+        with patch.object(demo, "apply") as apply:
+            demo.install_identity_route("172.18.0.5")
+        service, endpoints, route = [call.args[0] for call in apply.call_args_list]
+        self.assertNotIn("type", service["spec"])
+        self.assertEqual(endpoints["endpoints"][0]["addresses"], ["172.18.0.5"])
+        self.assertEqual(endpoints["metadata"]["labels"]["kubernetes.io/service-name"], service["metadata"]["name"])
+        self.assertEqual(route["spec"]["hostnames"], [demo.DASHBOARD_HOST])
+        rule = route["spec"]["rules"][0]
+        self.assertEqual(rule["matches"], [{"path": {"type": "PathPrefix", "value": "/dex"}}])
+        self.assertEqual(rule["backendRefs"][0]["name"], service["metadata"]["name"])
+        self.assertEqual(rule["backendRefs"][0]["port"], service["spec"]["ports"][0]["port"])
+
     def test_identity_and_cli_credentials_come_from_public_api_responses(self):
         responses = {
             "WhoAmI": {"user": {"id": "user-from-api"}},
@@ -181,9 +223,12 @@ class HarnessTests(unittest.TestCase):
             (path / "endpoint.json").write_text(json.dumps({"cliApiUrl": "http://kind-node:30080"}))
             (path / "secrets.json").write_text(json.dumps({"database": "temporary-password"}))
             with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
-                 patch.object(demo.urllib.request, "urlopen", return_value=provider), \
+                 patch.object(demo.urllib.request, "urlopen", return_value=provider) as provider_request, \
                  patch.object(demo, "api", side_effect=lambda method, data, **kwargs: responses[method.rsplit("/", 1)[1]]) as calls:
                 demo.create_identity()
+            form = demo.urllib.parse.parse_qs(provider_request.call_args.args[0].data.decode())
+            self.assertEqual(form["client_id"], ["loco"])
+            self.assertNotIn("client_secret", form)
             identity = json.loads((path / "identity.json").read_text())
             self.assertEqual(identity["workspaceId"], "workspace-from-api")
             credentials = json.loads((path / "cli/credentials.json").read_text())
@@ -649,11 +694,29 @@ class DashboardTests(unittest.TestCase):
 
     def test_same_origin_runtime_and_real_config_rpc_are_required(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
-             patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {"Cache-Control": "no-store"})]), \
-             patch.object(demo, "api", return_value={"serviceDefaults": {"cpu": "100m"}}) as api:
+             patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {"Cache-Control": "no-store"}),
+                                                               (json.dumps({"issuer": demo.DEX_ISSUER}), {})]), \
+             patch.object(demo, "api", return_value={"serviceDefaults": {"cpu": "100m"},
+                                                      "auth": {"issuer": demo.DEX_ISSUER, "clientId": "loco"}}) as api:
             demo.check_dashboard()
             self.assertTrue((Path(tmp) / "dashboard.html").exists())
         api.assert_called_once_with("loco.config.v1.ConfigService/GetConfig", {}, token=None)
+
+    def test_oidc_discovery_must_be_served_through_the_dashboard_gateway(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {}),
+                                                               (json.dumps({"issuer": "http://unreachable/dex"}), {})]), \
+             patch.object(demo, "api", return_value={"serviceDefaults": {},
+                                                      "auth": {"issuer": demo.DEX_ISSUER, "clientId": "loco"}}):
+            with self.assertRaisesRegex(RuntimeError, "OIDC discovery"):
+                demo.check_dashboard()
+
+    def test_dashboard_without_browser_auth_configuration_fails(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "dashboard_get", side_effect=[(self.html, {}), (self.runtime, {})]), \
+             patch.object(demo, "api", return_value={"serviceDefaults": {"cpu": "100m"}}):
+            with self.assertRaisesRegex(RuntimeError, "browser sign-in"):
+                demo.check_dashboard()
 
     def test_compiled_external_api_or_cached_runtime_fails(self):
         for runtime, headers in [('window.locoConfig = {"apiURL":"https://api.loco.build"};', {}),
