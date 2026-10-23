@@ -539,6 +539,38 @@ class PublicTelemetryTests(unittest.TestCase):
 
 
 class BootstrapContractTests(unittest.TestCase):
+    def test_corrupt_metrics_server_chart_is_rejected_before_extraction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cache = Path(tmp)
+            archive = cache / "charts" / f"metrics-server-{demo.VERSIONS['metricsServer']['chart']}.tgz"
+            archive.parent.mkdir()
+            archive.write_bytes(b"changed archive")
+            with patch.object(demo, "CACHE", cache), patch.object(demo.tarfile, "open") as extract:
+                with self.assertRaisesRegex(RuntimeError, "Metrics Server chart checksum mismatch"):
+                    demo.prepare_metrics_server_chart()
+                extract.assert_not_called()
+
+    def test_collector_autoscaling_requires_cpu_sample_and_active_hpa(self):
+        hpa = {"metadata": {"generation": 1}, "status": {
+            "observedGeneration": 1, "conditions": [{"type": "ScalingActive", "status": "True"}],
+            "currentMetrics": [{"type": "Resource", "resource": {"name": "cpu", "current": {"averageUtilization": 0}}}]}}
+        sample = {"items": [{"metadata": {"name": "otel-col-deploy-example"},
+                             "containers": [{"name": "collector", "usage": {"cpu": "0", "memory": "100Mi"}}]}]}
+        for label, status, metrics, expected in [
+            ("valid zero CPU", hpa, sample, True),
+            ("no samples", hpa, {"items": []}, False),
+            ("no container CPU", hpa, {"items": [{"containers": [{"usage": {"memory": "100Mi"}}]}]}, False),
+            ("inactive HPA", {**hpa, "status": {**hpa["status"], "conditions": [{"type": "ScalingActive", "status": "False"}]}}, sample, False),
+            ("stale HPA", {**hpa, "status": {**hpa["status"], "observedGeneration": 0}}, sample, False),
+            ("no computed utilization", {**hpa, "status": {**hpa["status"], "currentMetrics": []}}, sample, False),
+        ]:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                def kube(*args):
+                    return json.dumps(metrics if "--raw" in args else status)
+                with patch.object(demo, "OUT", Path(tmp)), patch.object(demo, "kube", side_effect=kube):
+                    self.assertEqual(demo.collector_autoscaling_ready(), expected)
+                    self.assertEqual((Path(tmp) / "collector-autoscaling.json").exists(), expected)
+
     def test_failed_bootstrap_does_not_clean_up_an_existing_owned_cluster(self):
         with patch.object(demo.sys, "argv", ["demo.py", "e2e"]), \
              patch.object(demo, "record", return_value=False), \

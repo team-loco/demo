@@ -354,6 +354,20 @@ def checkout(repository, ref, commit, dest):
     run(["git", "checkout", "--detach", commit], cwd=dest)
 
 
+def prepare_metrics_server_chart():
+    pin = VERSIONS["metricsServer"]
+    archive = CACHE / "charts" / f"metrics-server-{pin['chart']}.tgz"
+    archive.parent.mkdir(parents=True, exist_ok=True)
+    if not archive.exists():
+        with urllib.request.urlopen(pin["chartUrl"], timeout=60) as response:
+            archive.write_bytes(response.read())
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != pin["chartSha256"]:
+        raise RuntimeError("Metrics Server chart checksum mismatch")
+    with tarfile.open(archive) as source:
+        source.extractall(archive.parent, filter="data")
+    return archive.parent / "metrics-server"
+
+
 def prepare():
     CACHE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
@@ -399,6 +413,7 @@ def prepare():
             raise RuntimeError("Upstream chart checksum mismatch")
         with tarfile.open(archive) as source:
             source.extractall(archive.parent, filter="data")
+    prepare_metrics_server_chart()
     for name in ["loco-core", "loco-networking", "loco-obs", "loco-control-plane"]:
         run(["helm", "dependency", "build", CORE / "charts" / name], timeout=READY_SECONDS)
     print("CLI checksums and release source verified; immutable platform source and chart dependencies prepared", flush=True)
@@ -475,7 +490,8 @@ def validate():
     assert_infrastructure_only(docs)
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
     validate_platform_charts()
-    print("Validated all 16 loco.yaml files, infrastructure-only chart and control-plane charts", flush=True)
+    validate_metrics_server_chart()
+    print("Validated all 16 loco.yaml files, infrastructure-only chart, control-plane charts and resource metrics chart", flush=True)
 
 
 def control_plane_values():
@@ -513,6 +529,55 @@ def validate_platform_charts():
         "helm", "template", "loco-control-plane", CORE / "charts/loco-control-plane",
         "--namespace", API_NAMESPACE, "-f", STATE / "control-plane-render-values.yaml"])
     (OUT / "platform-charts.yaml").write_text(rendered)
+
+
+def metrics_server_values():
+    return {"image": image_values(VERSIONS["infrastructureImages"]["metrics-server"])}
+
+
+def validate_metrics_server_chart():
+    write_yaml(STATE / "metrics-server.yaml", metrics_server_values())
+    rendered = run(["helm", "template", "metrics-server", CACHE / "charts/metrics-server",
+                    "--namespace", "kube-system", "-f", ROOT / "config/metrics-server.yaml",
+                    "-f", STATE / "metrics-server.yaml"])
+    docs = [doc for doc in yaml.safe_load_all(rendered) if doc]
+    deployment = next(doc for doc in docs if doc["kind"] == "Deployment")
+    container = deployment["spec"]["template"]["spec"]["containers"][0]
+    if container["image"] != VERSIONS["infrastructureImages"]["metrics-server"]:
+        raise RuntimeError("Metrics Server chart does not render the pinned image")
+    service = next(doc for doc in docs if doc["kind"] == "APIService")
+    if service["metadata"]["name"] != "v1beta1.metrics.k8s.io":
+        raise RuntimeError("Metrics Server chart does not register the resource metrics API")
+    (OUT / "metrics-server.yaml").write_text(rendered)
+
+
+def install_metrics_server():
+    write_yaml(STATE / "metrics-server.yaml", metrics_server_values())
+    helm_install("metrics-server", CACHE / "charts/metrics-server", "kube-system",
+                 "-f", ROOT / "config/metrics-server.yaml", "-f", STATE / "metrics-server.yaml")
+    kube("wait", "apiservice/v1beta1.metrics.k8s.io", "--for=condition=Available", "--timeout=120s")
+
+
+def collector_autoscaling_ready():
+    hpa = json.loads(kube("-n", API_NAMESPACE, "get", "hpa", "otel-col-deploy", "-o", "json"))
+    status = hpa.get("status", {})
+    if status.get("observedGeneration") != hpa["metadata"]["generation"]:
+        return False
+    active = any(c.get("type") == "ScalingActive" and c.get("status") == "True"
+                 for c in status.get("conditions", []))
+    cpu = any(metric.get("resource", {}).get("name") == "cpu"
+              and metric["resource"].get("current", {}).get("averageUtilization") is not None
+              for metric in status.get("currentMetrics", []))
+    if not active or not cpu:
+        return False
+    selector = urllib.parse.urlencode({"labelSelector": "app.kubernetes.io/name=otel-col-deploy"})
+    metrics = json.loads(kube("get", "--raw", f"/apis/metrics.k8s.io/v1beta1/namespaces/{API_NAMESPACE}/pods?{selector}"))
+    items = metrics.get("items", [])
+    if not items or not all(pod.get("containers") and all(c.get("usage", {}).get("cpu") for c in pod["containers"])
+                            for pod in items):
+        return False
+    (OUT / "collector-autoscaling.json").write_text(json.dumps({"hpa": hpa, "podMetrics": metrics}, indent=2) + "\n")
+    return True
 
 
 def assert_infrastructure_only(docs):
@@ -776,6 +841,8 @@ def up():
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
     helm_install("loco-networking", CORE / "charts/loco-networking", "kube-system",
                  "-f", ROOT / "config/networking.yaml")
+    with step("Install Kubernetes resource metrics for collector autoscaling"):
+        install_metrics_server()
     for ns in ["loco-system", "observability", "observability-node"]:
         apply({"apiVersion": "v1", "kind": "Namespace", "metadata": {"name": ns}})
     with step("Start PostgreSQL, registry, source storage and Dex"):
@@ -804,6 +871,7 @@ def up():
     write_yaml(STATE / "observability.yaml", obs)
     helm_install("loco-obs", CORE / "charts/loco-obs", API_NAMESPACE,
                  "-f", ROOT / "config/observability.yaml", "-f", STATE / "observability.yaml")
+    wait_for("collector CPU autoscaling", collector_autoscaling_ready)
     core = {"agent": {"image": image_values(VERSIONS["loco"]["images"]["agent"]),
                       "clusterName": CLUSTER, "clusterRegion": REGION, "clusterTier": "production"},
             "env": {"CONTROL_PLANE_URL": f"http://{DASHBOARD_HOST}:{GATEWAY_NODE_PORT}/api",
