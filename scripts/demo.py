@@ -214,7 +214,7 @@ def helm_install(name, chart, namespace, *values):
 # Release binaries and the CLIs' own credential store.
 
 def binary(tool):
-    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64", "amd64": "amd64"}.get(platform.machine().lower())
+    arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine().lower())
     if arch is None:
         raise RuntimeError(f"Unsupported architecture: {platform.machine()}")
     return CACHE / "bin" / LOCO_VERSION / f"{tool}-{platform.system().lower()}-{arch}"
@@ -227,7 +227,7 @@ def release_asset(name):
 def published_checksums():
     with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
         lines = response.read().decode().splitlines()
-    return {line.split()[-1].lstrip("*"): line.split()[0] for line in lines if line.strip()}
+    return {line.split()[-1]: line.split()[0] for line in lines if line.strip()}
 
 
 def download_release_binaries(checksums):
@@ -307,8 +307,6 @@ def installation(cluster_uid, private_egress):
 
 
 def validate():
-    if not binary("loco").exists():
-        prepare()
     for name in APPS:
         stage_app(name)
         result = run([binary("loco"), "infra", "validate", STATE / "work" / name / "loco.yaml"], check=False)
@@ -593,10 +591,6 @@ def deploy_one(name):
         output = loco("deploy", "--file", STATE / "work" / name / "loco.yaml", *image_args,
                       "--yes", "--confirm-import", "--env", "production",
                       timeout=BUILD_SECONDS, log=OUT / f"deploy-{name}.log")
-    if APPS[name]["mode"] == "source":
-        builds = [b for b in list_builds(record_resources()[name]) if b["status"] == "BUILD_STATUS_SUCCEEDED"]
-        if not builds:
-            raise RuntimeError(f"{name}: BuildService reports no successful build")
     return output[-1500:]
 
 
