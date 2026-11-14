@@ -1,0 +1,49 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/team-loco/loco/main/schemas/installation.v1.json
+# The runner fills in the values marked "set by the runner" and writes .state/installation.yaml.
+version: 1
+name: loco-demo
+release: {version: set by the runner from versions.json}
+controlPlane:
+  kubernetes: {context: kind-loco-demo, clusterUID: set by the runner, namespace: loco-system}
+  apiURL: http://api.loco-demo.localhost
+  webURL: http://console.loco-demo.localhost
+  database:
+    secretRef: {name: loco-inputs, key: database-url}
+  auth:
+    issuer: http://dex.loco-demo.localhost:15556/dex
+    clientId: loco
+    bootstrapRedirectURI: http://127.0.0.1:8400/callback
+    signupMode: closed
+  sourceBucket:
+    endpoint: http://s3.loco-demo.localhost:19000
+    region: us-east-1
+    bucket: loco-sources
+    credentialsSecretRef: {name: loco-inputs}
+  registry:
+    endpoint: http://registry.loco-demo.localhost:5000
+    credentialsSecretRef: {name: loco-inputs}
+  openbao:
+    managed: true
+    seal: {type: static}
+    snapshots:
+      endpoint: http://s3.loco-demo.localhost:19000
+      region: us-east-1
+      bucket: loco-backups
+      credentialsSecretRef: {name: loco-inputs}
+  observability:
+    enabled: true
+    ingestURL: http://ingest.loco-demo.localhost
+  certificates:
+    issuerRef: {name: loco-demo-selfsigned, kind: ClusterIssuer}
+workers:
+  - name: local
+    kubernetes: {context: kind-loco-demo, clusterUID: set by the runner, namespace: loco-worker}
+    region: us-east-1
+    tier: production
+    role: all
+    appsDomain: apps.loco-demo.localhost
+    metricsServer: {enabled: true, kubeletInsecureTLS: true}
+    # Set by the runner: the registry and source bucket addresses source builds may reach.
+    builds: {privateEgress: []}
+    certificates:
+      issuerRef: {name: loco-demo-selfsigned, kind: ClusterIssuer}

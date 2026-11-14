@@ -1,7 +1,7 @@
 default:
   envOverrides:
   - name: OTEL_COLLECTOR_NAME
-    value: otel-col-deploy.observability.svc.cluster.local
+    value: otel-col-deploy.loco-obs.svc.cluster.local
 components:
   accounting:
     enabled: false

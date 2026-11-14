@@ -2,7 +2,6 @@ version: 1
 partial: fraud-detection
 services:
   fraud-detection:
-    port: 8080
     env:
       FLAGD_HOST: flagd
       FLAGD_PORT: '8013'

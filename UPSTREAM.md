@@ -6,4 +6,4 @@ Only shop services, their shared protobuf definitions, Kafka, feature-flag fixtu
 
 The E2E harness adds `COPY otel-config.yml /otel-config.yml` to the staged product-catalog Dockerfile. This supplies the file that upstream mounts with Kubernetes or Compose. Runtime wiring lives in `apps/*/loco.yaml` and `scripts/demo.py`.
 
-To update, choose an upstream release, copy the same fixture directories, update `versions.json` and prebuilt app/configuration digests, then run `mise run test`, `mise run validate`, and the complete E2E workflow. Keep source fixtures, prebuilt images, and upstream chart appVersion aligned.
+To update, choose an upstream release, copy the same fixture directories, update the `upstream` entry in `versions.json`, the prebuilt image digests in `apps/*/loco.yaml` and the image pins in `config/demo-infrastructure.yaml`, then run `mise run test`, `mise run validate`, and the complete E2E workflow. Keep source fixtures, prebuilt images, and upstream chart appVersion aligned.

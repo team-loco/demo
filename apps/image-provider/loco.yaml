@@ -5,7 +5,7 @@ services:
     port: 8081
     env:
       IMAGE_PROVIDER_PORT: '8081'
-      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_COLLECTOR_HOST: otel-col-deploy.loco-obs.svc.cluster.local
       OTEL_COLLECTOR_PORT_GRPC: '4317'
       OTEL_TRACES_SAMPLER: always_on
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative

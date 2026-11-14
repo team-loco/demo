@@ -4,7 +4,6 @@ services:
   accounting:
     runAsUser: 1654
     runAsGroup: 1654
-    port: 8080
     env:
       DB_CONNECTION_STRING: Host=astronomy-db;Username=astronomy_user;Password=astronomy_password;Database=astronomy_db
       KAFKA_ADDR: kafka:9092

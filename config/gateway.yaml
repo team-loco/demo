@@ -1,0 +1,13 @@
+# Stands in for a load balancer: host port 80 reaches the control-plane Gateway's
+# Envoy pods through node port 30080, and pods reach them through this Service's address.
+apiVersion: v1
+kind: Service
+metadata: {name: loco-demo-gateway, namespace: loco-system}
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/managed-by: envoy-gateway
+    app.kubernetes.io/component: proxy
+    gateway.envoyproxy.io/owning-gateway-namespace: loco-system
+  ports:
+    - {name: http, port: 80, targetPort: 10080, nodePort: 30080}

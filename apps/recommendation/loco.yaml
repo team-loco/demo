@@ -16,7 +16,7 @@ services:
       PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
       RECOMMENDATION_PORT: '9001'
       OTEL_TRACES_SAMPLER: always_on
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:

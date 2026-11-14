@@ -1,0 +1,18 @@
+issuer: http://dex.loco-demo.localhost:15556/dex
+storage: {type: memory}
+web: {http: 0.0.0.0:15556}
+oauth2: {skipApprovalScreen: true}
+enablePasswordDB: true
+staticPasswords:
+  - email: demo@example.test
+    username: demo
+    userID: 8655a053-5048-48f1-afd3-da1f20f18295
+    # bcrypt of demo-password
+    hash: "$2a$10$j3nssWM87i4Auuooh2gSLemKTuF5vp0BJXq9aPc0DtRONoT7q3HnG"
+staticClients:
+  - id: loco
+    name: Loco demo
+    public: true
+    redirectURIs:
+      - http://console.loco-demo.localhost/auth/callback
+      - http://127.0.0.1:8400/callback
