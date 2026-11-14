@@ -85,13 +85,14 @@ def resources():
 def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None):
     args = [str(a) for a in args]
     env = {**os.environ, **(env or {})}
+    if log:
+        Path(log).parent.mkdir(parents=True, exist_ok=True)
     if stream:
-        result = run_streamed(args, cwd=cwd, input=input, timeout=timeout, env=env, log=log)
+        result = run_streamed(args, cwd=cwd, timeout=timeout, env=env, log=log)
     else:
         result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, env=env)
         if log:
-            Path(log).parent.mkdir(parents=True, exist_ok=True)
             Path(log).write_text(redact(result.stdout))
     if check and result.returncode:
         raise RuntimeError(f"{Path(args[0]).name} {' '.join(args[1:3])} failed (exit {result.returncode}):\n"
@@ -99,62 +100,33 @@ def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=No
     return result.stdout if check else result
 
 
-def run_streamed(args, *, cwd, input, timeout, env, log):
-    if log:
-        Path(log).parent.mkdir(parents=True, exist_ok=True)
+def run_streamed(args, *, cwd, timeout, env, log):
     output = []
-    with contextlib.ExitStack() as stack:
-        logfile = stack.enter_context(Path(log).open("w")) if log else None
-        process = stack.enter_context(subprocess.Popen(
-            args, cwd=cwd, env=env, stdin=subprocess.PIPE if input is not None else None,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
-            start_new_session=True))
+    with Path(log).open("w") as logfile, subprocess.Popen(
+            args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            start_new_session=True) as process:
         def read_output():
             for line in process.stdout:
                 output.append(line)
-                sanitized = redact(line)
-                print(sanitized, end="", flush=True)
-                if logfile:
-                    logfile.write(sanitized)
-                    logfile.flush()
-        def write_input():
-            try:
-                process.stdin.write(input)
-            except BrokenPipeError:
-                pass
-            finally:
-                process.stdin.close()
+                print(redact(line), end="", flush=True)
+                logfile.write(redact(line))
+                logfile.flush()
         reader = threading.Thread(target=read_output)
         reader.start()
-        writer = threading.Thread(target=write_input) if input is not None else None
-        if writer:
-            writer.start()
         started = time.monotonic()
-        deadline = started + timeout
-        label = Path(log).stem if log else Path(args[0]).name
-        try:
-            while True:
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    raise subprocess.TimeoutExpired(args[0], timeout)
-                try:
-                    process.wait(timeout=min(PROGRESS_SECONDS, remaining))
-                    break
-                except subprocess.TimeoutExpired:
-                    elapsed = time.monotonic() - started
-                    print(f"RUN {label} ({elapsed:.0f}s elapsed)", flush=True)
-        except subprocess.TimeoutExpired:
+        while True:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            reader.join()
-            raise subprocess.TimeoutExpired(args[0], timeout, output=redact("".join(output))) from None
-        finally:
-            reader.join()
-            if writer:
-                writer.join()
+                process.wait(timeout=max(0, min(PROGRESS_SECONDS, started + timeout - time.monotonic())))
+                break
+            except subprocess.TimeoutExpired:
+                if time.monotonic() >= started + timeout:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait()
+                    reader.join()
+                    raise subprocess.TimeoutExpired(args[0], timeout, output=redact("".join(output))) from None
+                print(f"RUN {Path(log).stem} ({time.monotonic() - started:.0f}s elapsed)", flush=True)
+        reader.join()
     return subprocess.CompletedProcess(args, process.returncode, "".join(output))
 
 
@@ -186,32 +158,16 @@ def redact(text):
 
 
 def write_yaml(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(data, sort_keys=False))
+    Path(path).write_text(yaml.safe_dump(data, sort_keys=False))
 
 
 def kube(*args, **kwargs):
     return run(["kubectl", "--kubeconfig", STATE / "kubeconfig", "--context", CONTEXT, *args], **kwargs)
 
 
-def apply(data):
-    documents = data if isinstance(data, list) else [data]
-    kube("apply", "-f", "-", input=yaml.safe_dump_all(documents))
-
-
 def compose(*args, **kwargs):
     return run(["docker", "compose", "-p", PROJECT, "-f", CONFIG / "fixtures.yaml", *args], **kwargs)
 
-
-def helm_install(name, chart, namespace, *values):
-    with step(f"Install Helm release {name} in {namespace}"):
-        run(["helm", "upgrade", "--install", name, chart, "--namespace", namespace, "--create-namespace",
-             "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT, *values, "--wait", "--timeout", "10m"],
-            timeout=READY_SECONDS + 120, log=OUT / f"helm-{name}.log", stream=True)
-
-
-# Release binaries and the CLIs' own credential store.
 
 def binary(tool):
     arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine().lower())
@@ -222,12 +178,6 @@ def binary(tool):
 
 def release_asset(name):
     return f"https://github.com/team-loco/loco/releases/download/v{LOCO_VERSION}/{name}"
-
-
-def published_checksums():
-    with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
-        lines = response.read().decode().splitlines()
-    return {line.split()[-1]: line.split()[0] for line in lines if line.strip()}
 
 
 def download_release_binaries(checksums):
@@ -246,7 +196,7 @@ def download_release_binaries(checksums):
 
 
 def cli_env():
-    # The CLIs keep their session under $HOME/.loco; LOCO_CREDENTIAL_STORE=file keeps it out of the OS keychain.
+    # A file store keeps the demo session out of the OS keychain.
     return {"HOME": str(STATE / "home"), "LOCO_CREDENTIAL_STORE": "file", "KUBECONFIG": str(STATE / "kubeconfig")}
 
 
@@ -264,9 +214,9 @@ def locoadm(*args, log, check=True, timeout=INSTALL_SECONDS):
 
 
 def prepare():
-    CACHE.mkdir(exist_ok=True)
-    OUT.mkdir(exist_ok=True)
-    download_release_binaries(published_checksums())
+    with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
+        lines = response.read().decode().splitlines()
+    download_release_binaries({line.split()[-1]: line.split()[0] for line in lines if line.strip()})
     chart = CACHE / "charts" / "opentelemetry-demo"
     if not chart.exists():
         archive = CACHE / "charts" / "opentelemetry-demo.tgz"
@@ -279,8 +229,6 @@ def prepare():
             source.extractall(archive.parent, filter="data")
     print(f"Loco {LOCO_VERSION} CLIs match the release checksums; upstream chart prepared", flush=True)
 
-
-# Configuration checks that need no cluster.
 
 def stage_app(name):
     doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
@@ -328,8 +276,6 @@ def assert_infrastructure_only(docs):
         raise RuntimeError(f"Unexpected upstream workloads: {sorted(names)}")
 
 
-# Fixtures: the external services and DNS an operator supplies.
-
 def fixture_addresses():
     return {name: run(["docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
                        f"{PROJECT}-{name}"]).strip() for name in FIXTURES}
@@ -350,7 +296,7 @@ def configure_cluster_dns(hosts):
     entries = "\n".join(f"        {ip} {' '.join(names)}" for ip, names in hosts.items())
     cm["data"]["Corefile"] = cm["data"]["Corefile"].replace(
         "    kubernetes cluster.local", f"    hosts {{\n{entries}\n        fallthrough\n    }}\n    kubernetes cluster.local", 1)
-    apply(cm)
+    kube("apply", "-f", "-", input=json.dumps(cm))
     kube("-n", "kube-system", "rollout", "restart", "deployment/coredns")
     kube("-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=120s")
 
@@ -386,8 +332,6 @@ def start_fixtures():
     return addresses
 
 
-# The operator workflow.
-
 class LoginForm(html.parser.HTMLParser):
     def __init__(self):
         super().__init__()
@@ -403,7 +347,6 @@ class LoginForm(html.parser.HTMLParser):
 
 
 def sign_in(authorization_url):
-    """Complete Dex's password login, which redirects to the loopback callback locoadm listens on."""
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
     with opener.open(authorization_url, timeout=30) as page:
         form = LoginForm()
@@ -474,7 +417,6 @@ def up():
     collisions = containers.intersection(f"{PROJECT}-{name}" for name in FIXTURES)
     if collisions:
         raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
-    STATE.mkdir(exist_ok=True)
     write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
     INFRA_STARTED = True
     with step("Create kind cluster"):
@@ -487,8 +429,6 @@ def up():
     install_loco(STATE / "installation.yaml")
     print(f"Loco is running. Dashboard: {CONTROL_PLANE['webURL']} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
-
-# Public API access with the session bootstrap saved.
 
 def rpc(procedure, data, token=None):
     headers = {"Content-Type": "application/json", "Connect-Protocol-Version": "1"}
@@ -508,7 +448,6 @@ def rpc(procedure, data, token=None):
 
 
 def session_token():
-    """Read the CLI session, refreshing it the way the CLIs do when it is about to expire."""
     stored = json.loads(credentials_path().read_text())
     now = dt.datetime.now(dt.UTC)
     if dt.datetime.fromisoformat(stored["expiresAt"]) - now > dt.timedelta(minutes=5):
@@ -524,24 +463,22 @@ def api(procedure, data, token=None):
     return rpc(procedure, data, token or session_token())
 
 
-def list_api(procedure, request, key):
-    records = []
-    seen = set()
-    request = dict(request)
+def paginate(fetch, request, key, next_field="nextPageToken", cursor_field="pageToken"):
+    records, seen, request = [], set(), dict(request)
     while True:
-        response = api(procedure, request)
+        response = fetch(request)
         records.extend(response.get(key, []))
-        cursor = response.get("nextPageToken")
+        cursor = response.get(next_field)
         if not cursor:
             return records
         if cursor in seen:
-            raise RuntimeError(f"{procedure}: repeated pagination cursor")
+            raise RuntimeError(f"{key}: repeated pagination cursor")
         seen.add(cursor)
-        request["pageToken"] = cursor
+        request[cursor_field] = cursor
 
 
-def list_builds(resource_id):
-    return list_api("loco.build.v1.BuildService/ListBuilds", {"resourceId": resource_id, "pageSize": 200}, "builds")
+def list_api(procedure, request, key):
+    return paginate(lambda page: api(procedure, page), request, key)
 
 
 def created_id(output):
@@ -550,8 +487,6 @@ def created_id(output):
         raise RuntimeError("The CLI did not report the created ID: " + output)
     return match.group(1)
 
-
-# Deployment.
 
 def create_workspace():
     if (STATE / "identity.json").exists():
@@ -579,7 +514,6 @@ def record_resources():
                       {"workspaceId": workspace_id(), "pageSize": 200}, "resources")
     ids = {resource["name"]: resource["id"] for resource in listed if resource["name"] in APPS}
     (STATE / "resources.json").write_text(json.dumps(ids, indent=2))
-    return ids
 
 
 def deploy_one(name):
@@ -596,15 +530,16 @@ def deploy_one(name):
 
 def deploy(names=None):
     create_workspace()
-    helm_install("astronomy", CACHE / "charts/opentelemetry-demo", app_namespace(),
-                 "-f", CONFIG / "demo-infrastructure.yaml")
+    with step("Install the shop's Kafka, Valkey, PostgreSQL and flagd"):
+        run(["helm", "upgrade", "--install", "astronomy", CACHE / "charts/opentelemetry-demo",
+             "--namespace", app_namespace(), "--create-namespace", "-f", CONFIG / "demo-infrastructure.yaml",
+             "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT, "--wait", "--timeout", "10m"],
+            timeout=READY_SECONDS + 120, log=OUT / "helm-astronomy.log", stream=True)
     for name in names or APPS:
         record("deploy:" + name, lambda name=name: deploy_one(name))
     record_resources()
     return all(r["status"] == "PASS" for r in RESULTS)
 
-
-# Verification through Loco's public APIs.
 
 def wait_for(name, predicate, seconds=READY_SECONDS):
     started = time.monotonic()
@@ -617,7 +552,7 @@ def wait_for(name, predicate, seconds=READY_SECONDS):
             if predicate():
                 print(f"READY {name} ({time.monotonic() - started:.0f}s)", flush=True)
                 return
-        except (RuntimeError, urllib.error.URLError, OSError, IndexError, KeyError) as exc:
+        except (RuntimeError, OSError, IndexError, KeyError) as exc:
             last = exc
         now = time.monotonic()
         if now >= deadline:
@@ -639,7 +574,6 @@ def record(name, fn):
         result = {"name": name, "status": "FAIL", "detail": redact(str(exc))}
     result["seconds"] = round(time.monotonic() - started, 2)
     RESULTS.append(result)
-    OUT.mkdir(exist_ok=True)
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
     print(f"{result['status']} {name}: {result['detail']}", flush=True)
     return result["status"] == "PASS"
@@ -672,7 +606,7 @@ def check_resource(name, resource_id):
 
 def check_builds(ids):
     for name, meta in APPS.items():
-        builds = list_builds(ids[name])
+        builds = list_api("loco.build.v1.BuildService/ListBuilds", {"resourceId": ids[name], "pageSize": 200}, "builds")
         if meta["mode"] == "source" and not any(b["status"] == "BUILD_STATUS_SUCCEEDED" for b in builds):
             raise RuntimeError(f"{name} has no succeeded cluster build: {builds}")
         if meta["mode"] == "image" and builds:
@@ -715,7 +649,6 @@ def traffic():
         # Payment connects to flagd on its first charge and can miss that request's deadline.
         wait_for("checkout", checkout, seconds=60)
         (STATE / "order.json").write_text(json.dumps(order))
-        (STATE / "trace.json").write_text(json.dumps({"traceId": order["traceId"]}))
         result = {"orderId": order["orderId"], "traceId": order["traceId"]}
         (OUT / "checkout.json").write_text(json.dumps(result))
         return result
@@ -733,21 +666,10 @@ def time_range(minutes=10):
 def query_logs(resource_ids):
     request = {"workspaceId": workspace_id(), "environmentId": identity()["environmentId"],
                "resourceIds": resource_ids, **time_range(), "limit": 200, "order": "LOG_ORDER_NEWEST_FIRST"}
-    entries = []
-    seen = set()
-    while True:
-        response = observability_rpc("QueryLogs", request)
-        page = response.get("entries", [])
-        if any(entry["resourceId"] not in resource_ids for entry in page):
-            raise RuntimeError("QueryLogs returned a resource outside the requested scope")
-        entries.extend(page)
-        cursor = response.get("nextCursor")
-        if not cursor:
-            return entries
-        if cursor in seen:
-            raise RuntimeError("QueryLogs repeated pagination cursor")
-        seen.add(cursor)
-        request["cursor"] = cursor
+    entries = paginate(lambda page: observability_rpc("QueryLogs", page), request, "entries", "nextCursor", "cursor")
+    if any(entry["resourceId"] not in resource_ids for entry in entries):
+        raise RuntimeError("QueryLogs returned a resource outside the requested scope")
+    return entries
 
 
 def order_log_sources(resource_ids, order_id):
@@ -797,10 +719,8 @@ def check_metrics():
     def observed():
         nonlocal baseline
         value, response = payment_counter()
-        if value < baseline:
-            baseline = value
-            return False
         if value <= baseline:
+            baseline = value
             return False
         (OUT / "metrics-api.json").write_text(json.dumps({
             "baseline": baseline, "observed": value, "response": response,
@@ -808,11 +728,6 @@ def check_metrics():
         return True
     wait_for("payment counter increase through QueryMetrics", observed, TELEMETRY_SECONDS)
     return "QueryMetrics reports a payment counter increase after the checkout"
-
-
-def get_trace(trace_id, resource_ids):
-    scope = {"workspaceId": workspace_id(), "resourceIds": resource_ids, "environmentId": identity()["environmentId"]}
-    return observability_rpc("GetTrace", {"scope": scope, "traceId": trace_id}).get("spans", [])
 
 
 def connected_checkout_trace(spans, trace_id, ids):
@@ -856,9 +771,10 @@ def connected_checkout_trace(spans, trace_id, ids):
 
 def check_traces():
     ids = resources()
-    trace_id = json.loads((STATE / "trace.json").read_text())["traceId"]
+    trace_id = json.loads((STATE / "order.json").read_text())["traceId"]
+    scope = {"workspaceId": workspace_id(), "resourceIds": list(ids.values()), "environmentId": identity()["environmentId"]}
     def observed():
-        spans = get_trace(trace_id, list(ids.values()))
+        spans = observability_rpc("GetTrace", {"scope": scope, "traceId": trace_id}).get("spans", [])
         if not connected_checkout_trace(spans, trace_id, ids):
             return False
         (OUT / "traces-api.json").write_text(json.dumps({"traceId": trace_id, "spans": spans}, indent=2) + "\n")
@@ -909,10 +825,7 @@ def verify():
     return all(r["status"] == "PASS" for r in RESULTS)
 
 
-# Evidence, failure reports and cleanup.
-
 def diagnostics():
-    OUT.mkdir(exist_ok=True)
     if not owns_infrastructure():
         return
     if (STATE / "kubeconfig").exists():
@@ -938,7 +851,6 @@ def diagnostics():
 
 
 def save_report():
-    OUT.mkdir(exist_ok=True)
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
     lines = ["# Loco demo E2E evidence", "", "Loco: " + LOCO_VERSION,
              "Astronomy Shop: " + VERSIONS["upstream"]["release"], ""]
@@ -999,28 +911,25 @@ def down():
 
 
 def main():
-    global INFRA_STARTED
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["prepare", "validate", "up", "deploy", "verify", "e2e", "down", "report"])
     parser.add_argument("services", nargs="*", choices=list(APPS))
     parser.add_argument("--keep", action="store_true")
-    parser.add_argument("--report-issues", action="store_true")
     args = parser.parse_args()
+    STATE.mkdir(exist_ok=True)
+    OUT.mkdir(exist_ok=True)
     if args.services and args.command != "deploy":
         parser.error("Service selection is supported by deploy; e2e always tests all 16 apps")
     if args.command == "e2e":
-        INFRA_STARTED = False
         success = False
         try:
             if record("install", up):
                 deploy()
                 verify()
-            success = bool(RESULTS) and all(r["status"] == "PASS" for r in RESULTS)
+            success = all(r["status"] == "PASS" for r in RESULTS)
         finally:
             diagnostics()
             save_report()
-            if args.report_issues:
-                report()
             if not args.keep and INFRA_STARTED:
                 down()
         return 0 if success else 1

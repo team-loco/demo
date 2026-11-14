@@ -13,7 +13,6 @@ nodes:
         nodeRegistration:
           taints: []
     extraPortMappings:
-      # config/gateway.yaml exposes the control-plane Gateway on this node port.
       - containerPort: 30080
         hostPort: 80
         listenAddress: 127.0.0.1

@@ -1,5 +1,4 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/team-loco/loco/main/schemas/installation.v1.json
-# The runner fills in the values marked "set by the runner" and writes .state/installation.yaml.
 version: 1
 name: loco-demo
 release: {version: set by the runner from versions.json}
@@ -43,7 +42,6 @@ workers:
     role: all
     appsDomain: apps.loco-demo.localhost
     metricsServer: {enabled: true, kubeletInsecureTLS: true}
-    # Set by the runner: the registry and source bucket addresses source builds may reach.
     builds: {privateEgress: []}
     certificates:
       issuerRef: {name: loco-demo-selfsigned, kind: ClusterIssuer}

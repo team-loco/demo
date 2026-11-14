@@ -1,4 +1,4 @@
-# External inputs locoadm requires. The values are local fixture credentials.
+# The values are local fixture credentials.
 apiVersion: v1
 kind: Namespace
 metadata: {name: loco-system}

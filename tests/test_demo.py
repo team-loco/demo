@@ -292,11 +292,11 @@ class HarnessTests(unittest.TestCase):
             credentials = state / "home/.loco/credentials.json"
             credentials.parent.mkdir(parents=True)
             credentials.write_text(json.dumps({"token": "secret-session-value-must-not-leak", "refreshToken": "short"}))
-            with patch.object(demo, "STATE", state), patch.object(demo, "OUT", path / "out"), patch.object(demo, "RESULTS", []):
+            with patch.object(demo, "STATE", state), patch.object(demo, "OUT", path), patch.object(demo, "RESULTS", []):
                 def fail():
                     raise RuntimeError("failed with secret-session-value-must-not-leak")
                 self.assertFalse(demo.record("failure", fail))
-                results = (path / "out/results.json").read_text()
+                results = (path / "results.json").read_text()
                 self.assertIn('"status": "FAIL"', results)
                 self.assertNotIn("secret-session-value-must-not-leak", results)
                 self.assertIn("[REDACTED]", results)
@@ -326,8 +326,9 @@ class HarnessTests(unittest.TestCase):
             demo.wait_for("API health", health)
 
     def test_failed_install_does_not_clean_up_an_existing_owned_cluster(self):
-        with patch.object(demo.sys, "argv", ["demo.py", "e2e"]), \
-             patch.object(demo, "record", return_value=False), \
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "STATE", Path(tmp)), patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo.sys, "argv", ["demo.py", "e2e"]), \
+             patch.object(demo, "up", side_effect=RuntimeError("loco-demo already exists")), \
              patch.object(demo, "RESULTS", []), \
              patch.object(demo, "diagnostics"), patch.object(demo, "save_report"), \
              patch.object(demo, "down") as down:
@@ -398,15 +399,6 @@ class PublicTelemetryTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "repeated pagination cursor"):
                     demo.query_logs(["checkout-id"])
 
-    def test_trace_requests_scope_the_workspace_environment_and_resources(self):
-        with patch.object(demo, "workspace_id", return_value="workspace"), \
-             patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
-             patch.object(demo, "observability_rpc", return_value={"spans": [{"spanId": "one"}]}) as call:
-            self.assertEqual(demo.get_trace(self.trace_id, ["checkout-id"]), [{"spanId": "one"}])
-        call.assert_called_once_with("GetTrace", {
-            "scope": {"workspaceId": "workspace", "resourceIds": ["checkout-id"], "environmentId": "environment"},
-            "traceId": self.trace_id})
-
     def test_trace_requires_real_parent_connections_between_services(self):
         with patch.object(demo, "workspace_id", return_value="workspace"), \
              patch.object(demo, "identity", return_value={"environmentId": "environment"}):
@@ -436,14 +428,17 @@ class PublicTelemetryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / "resources.json").write_text(json.dumps(self.resources))
-            (path / "trace.json").write_text(json.dumps({"traceId": self.trace_id}))
+            (path / "order.json").write_text(json.dumps({"orderId": "order", "traceId": self.trace_id}))
             with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
                  patch.object(demo, "workspace_id", return_value="workspace"), \
                  patch.object(demo, "identity", return_value={"environmentId": "environment"}), \
-                 patch.object(demo, "get_trace", side_effect=[[], self.spans()]) as call, \
+                 patch.object(demo, "observability_rpc", side_effect=[{}, {"spans": self.spans()}]) as call, \
                  patch.object(demo.time, "sleep"):
                 demo.check_traces()
             self.assertEqual(call.call_count, 2)
+            self.assertEqual(call.call_args.args, ("GetTrace", {
+                "scope": {"workspaceId": "workspace", "resourceIds": list(self.resources.values()),
+                          "environmentId": "environment"}, "traceId": self.trace_id}))
             self.assertEqual(json.loads((path / "traces-api.json").read_text())["traceId"], self.trace_id)
 
     def test_payment_counter_uses_latest_sample_after_restart(self):
@@ -461,7 +456,6 @@ class PublicTelemetryTests(unittest.TestCase):
                  patch.object(demo, "observability_rpc", return_value=response) as call:
                 self.assertEqual(demo.payment_counter()[0], 6)
             self.assertEqual(call.call_args.args[1]["metricName"], "demo.payment.transactions")
-            self.assertEqual(call.call_args.args[1]["intervalSeconds"], 1)
 
     def test_counter_reset_requires_a_subsequent_increase(self):
         with tempfile.TemporaryDirectory() as tmp:

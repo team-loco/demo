@@ -1,5 +1,3 @@
-# External services an operator supplies to Loco. They join kind's Docker network;
-# the runner points each *.loco-demo.localhost name at them inside the cluster.
 services:
   postgres:
     image: postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
@@ -21,7 +19,7 @@ services:
       ROOT_SECRET_KEY: loco-demo-storage
       VGW_REGION: us-east-1
       VGW_PORT: ":19000"
-      # The API addresses buckets by hostname, as in loco-sources.s3.loco-demo.localhost.
+      # The API addresses buckets by hostname.
       VGW_VIRTUAL_DOMAIN: s3.loco-demo.localhost
     entrypoint: [sh, -c]
     command: ["mkdir -p /data/loco-sources /data/loco-backups && exec versitygw posix /data"]

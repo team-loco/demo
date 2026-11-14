@@ -1,5 +1,4 @@
-# Stands in for a load balancer: host port 80 reaches the control-plane Gateway's
-# Envoy pods through node port 30080, and pods reach them through this Service's address.
+# Stands in for a load balancer in front of the control-plane Gateway.
 apiVersion: v1
 kind: Service
 metadata: {name: loco-demo-gateway, namespace: loco-system}
