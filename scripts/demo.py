@@ -666,7 +666,7 @@ def check_resource(name, resource_id):
         environments = [e for e in resource.get("environmentStatuses", [])
                         if e["environmentId"] == identity()["environmentId"]]
         return bool(environments) and all(e.get("status") == "RESOURCE_STATUS_HEALTHY" for e in environments)
-    wait_for(name + " health through GetResource", healthy, seconds=90)
+    wait_for(name + " health through GetResource", healthy)
     return "GetResource reports healthy with the configured health semantics"
 
 
