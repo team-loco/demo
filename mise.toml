@@ -18,6 +18,8 @@ run = "uv run --locked python -m unittest discover -s tests -v"
 run = "uv run --locked python scripts/demo.py validate"
 [tasks.e2e]
 run = "uv run --locked python scripts/demo.py e2e"
+[tasks.start]
+run = ["uv run --locked python scripts/demo.py up", "uv run --locked python scripts/demo.py deploy"]
 [tasks.up]
 run = "uv run --locked python scripts/demo.py up"
 [tasks.deploy]
