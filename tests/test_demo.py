@@ -275,10 +275,13 @@ class HarnessTests(unittest.TestCase):
 
     def test_omitted_health_never_passes_when_resource_api_reports_http_checks(self):
         resource = {"spec": {"service": {"healthCheck": {"path": "/health"}}}}
-        with patch.object(demo, "api", return_value={"resource": resource}), patch.object(demo, "wait_for") as wait:
-            with self.assertRaisesRegex(RuntimeError, "omits health"):
-                demo.check_resource("payment", "payment-id")
-        wait.assert_not_called()
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "RESULTS", []), patch.object(demo, "api", return_value={"resource": resource}) as api, \
+             redirect_stdout(io.StringIO()):
+            demo.check_health({"payment": "payment-id"})
+            self.assertEqual(demo.RESULTS[0]["status"], "FAIL")
+            self.assertIn("omits health", demo.RESULTS[0]["detail"])
+        api.assert_called_once()
 
     def test_timeout_reports_the_last_failure(self):
         with patch.object(demo.time, "monotonic", side_effect=[0, 5]):
@@ -332,7 +335,7 @@ class HarnessTests(unittest.TestCase):
             (directory / "resources.json").write_text(json.dumps({"payment": "payment-id"}))
             with patch.object(demo, "STATE", directory), patch.object(demo, "OUT", directory), \
                  patch.object(demo, "RESULTS", []), \
-                 patch.object(demo, "check_resource", side_effect=RuntimeError("CreateContainerConfigError")), \
+                 patch.object(demo, "check_health_semantics", side_effect=RuntimeError("CreateContainerConfigError")), \
                  patch.object(demo, "check_no_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
                  patch.object(demo, "traffic", return_value="checked"), patch.object(demo, "check_logs", return_value="checked"), \
                  patch.object(demo, "check_metrics", side_effect=RuntimeError("token expired")), \
@@ -341,6 +344,69 @@ class HarnessTests(unittest.TestCase):
                 failures = [result["name"] for result in demo.RESULTS if result["status"] == "FAIL"]
                 self.assertEqual(failures, ["health:payment", "metrics-api"])
                 self.assertEqual(demo.RESULTS[-1]["name"], "kafka-consumers")
+
+
+class HealthWaitTests(unittest.TestCase):
+    ids = {"shipping": "shipping-id", "cart": "cart-id", "frontend": "frontend-id"}
+
+    def wait(self, healthy, pods):
+        clock = [0]
+        def sleep(seconds):
+            clock[0] += seconds
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
+             patch.object(demo, "RESULTS", []), patch.object(demo, "check_health_semantics"), \
+             patch.object(demo, "resource_healthy", side_effect=lambda rid: healthy(rid, clock[0])), \
+             patch.object(demo, "app_namespace", return_value="loco-ws-workspace"), \
+             patch.object(demo, "kube", return_value=json.dumps({"items": pods})), \
+             patch.object(demo.time, "monotonic", side_effect=lambda: clock[0]), \
+             patch.object(demo.time, "sleep", side_effect=sleep), redirect_stdout(io.StringIO()) as output:
+            demo.check_health(self.ids)
+            return {r["name"].removeprefix("health:"): r for r in demo.RESULTS}, output.getvalue()
+
+    def pod(self, resource, phase, containers=(), condition=None):
+        return {"metadata": {"name": f"resource-{resource}-7d9f8-x2k4p"},
+                "status": {"phase": phase, "containerStatuses": list(containers),
+                           "conditions": [condition] if condition else []}}
+
+    def test_services_healthy_at_different_times_finish_in_one_wait(self):
+        ready_at = {"shipping-id": 10, "cart-id": 40, "frontend-id": 90}
+        results, output = self.wait(lambda rid, now: now >= ready_at[rid], [])
+        self.assertEqual({name: r["status"] for name, r in results.items()},
+                         dict.fromkeys(self.ids, "PASS"))
+        self.assertEqual([results[name]["seconds"] for name in self.ids], [12, 42, 90])
+        self.assertIn("WAIT 1/3 healthy (15s elapsed); waiting for cart, frontend", output)
+
+    def test_deadline_records_the_kubernetes_reason_for_each_unhealthy_service(self):
+        pods = [
+            self.pod("shipping-id", "Pending", condition={
+                "type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+                "message": "0/1 nodes are available: 1 Insufficient memory. preemption: 0/1 nodes are available: "
+                           "1 No preemption victims found for incoming pod."}),
+            self.pod("cart-id", "Running", [{"name": "cart", "ready": False, "restartCount": 3,
+                                             "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                                             "lastState": {"terminated": {"reason": "OOMKilled"}}}]),
+            self.pod("frontend-id", "Running", [{"name": "frontend", "ready": False, "restartCount": 7,
+                                                 "state": {"waiting": {"reason": "CrashLoopBackOff"}},
+                                                 "lastState": {"terminated": {"reason": "Error"}}}]),
+        ]
+        results, output = self.wait(lambda rid, now: False, pods)
+        self.assertEqual({name: r["detail"] for name, r in results.items()}, {
+            "shipping": "Pending: 0/1 nodes are available: 1 Insufficient memory.",
+            "cart": "Running: cart CrashLoopBackOff, last OOMKilled, restarts 3",
+            "frontend": "Running: frontend CrashLoopBackOff, last Error, restarts 7",
+        })
+        self.assertTrue(all(r["status"] == "FAIL" for r in results.values()))
+        self.assertLess(results["cart"]["seconds"], demo.STALL_SECONDS)
+        self.assertGreaterEqual(results["frontend"]["seconds"], demo.READY_SECONDS)
+        self.assertIn("FAIL health:shipping: Pending: 0/1 nodes are available: 1 Insufficient memory.\n", output)
+
+    def test_services_the_scheduler_cannot_place_fail_before_the_deadline(self):
+        unschedulable = {"type": "PodScheduled", "status": "False", "reason": "Unschedulable",
+                         "message": "0/1 nodes are available: 1 Insufficient memory."}
+        results, _ = self.wait(lambda rid, now: False,
+                               [self.pod(rid, "Pending", condition=unschedulable) for rid in self.ids.values()])
+        self.assertEqual({r["status"] for r in results.values()}, {"FAIL"})
+        self.assertLess(max(r["seconds"] for r in results.values()), demo.STALL_SECONDS + 2 * demo.PROGRESS_SECONDS)
 
 
 class PublicTelemetryTests(unittest.TestCase):

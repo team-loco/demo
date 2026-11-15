@@ -61,6 +61,8 @@ READY_SECONDS = 600
 INSTALL_SECONDS = 2400
 TELEMETRY_SECONDS = 240
 PROGRESS_SECONDS = 15
+STALL_SECONDS = 120
+RETRYABLE = (RuntimeError, OSError, IndexError, KeyError)
 RESULTS = []
 INFRA_STARTED = False
 
@@ -515,7 +517,7 @@ def wait_for(name, predicate, seconds):
             if predicate():
                 print(f"READY {name} ({time.monotonic() - started:.0f}s)", flush=True)
                 return
-        except (RuntimeError, OSError, IndexError, KeyError) as exc:
+        except RETRYABLE as exc:
             last = exc
         now = time.monotonic()
         if now >= deadline:
@@ -531,15 +533,18 @@ def record(name, fn):
     print(f"CHECK {name}", flush=True)
     started = time.monotonic()
     try:
-        detail = fn()
-        result = {"name": name, "status": "PASS", "detail": detail or ""}
+        return save_result(name, "PASS", fn() or "", started)
     except Exception as exc:
-        result = {"name": name, "status": "FAIL", "detail": redact(str(exc))}
-    result["seconds"] = round(time.monotonic() - started, 2)
+        return save_result(name, "FAIL", str(exc), started)
+
+
+def save_result(name, status, detail, started):
+    result = {"name": name, "status": status, "detail": redact(detail),
+              "seconds": round(time.monotonic() - started, 2)}
     RESULTS.append(result)
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
     print(f"{result['status']} {name}: {result['detail']}", flush=True)
-    return result["status"] == "PASS"
+    return status == "PASS"
 
 
 def observability_rpc(method, request, token=None):
@@ -552,19 +557,108 @@ def observability_rpc(method, request, token=None):
                token=token or json.loads((STATE / "secrets.json").read_text())["telemetry"])
 
 
-def check_resource(name, resource_id):
-    configured = SERVICES[name]
-    resource = api("loco.resource.v1.ResourceService/GetResource", {"resourceId": resource_id})["resource"]
-    reported = resource.get("spec", {}).get("service", {}).get("healthCheck")
-    if "health" not in configured and reported:
+def get_resource(resource_id):
+    return api("loco.resource.v1.ResourceService/GetResource", {"resourceId": resource_id})["resource"]
+
+
+def check_health_semantics(name, resource_id):
+    reported = get_resource(resource_id).get("spec", {}).get("service", {}).get("healthCheck")
+    if "health" not in SERVICES[name] and reported:
         raise RuntimeError(f"{name} omits health but GetResource reports an HTTP health check: {json.dumps(reported)}")
-    def healthy():
-        resource = api("loco.resource.v1.ResourceService/GetResource", {"resourceId": resource_id})["resource"]
-        environments = [e for e in resource.get("environmentStatuses", [])
-                        if e["environmentId"] == identity()["environmentId"]]
-        return bool(environments) and all(e.get("status") == "RESOURCE_STATUS_HEALTHY" for e in environments)
-    wait_for(name + " health through GetResource", healthy, READY_SECONDS)
-    return "GetResource reports healthy with the configured health semantics"
+
+
+def resource_healthy(resource_id):
+    environments = [e for e in get_resource(resource_id).get("environmentStatuses", [])
+                    if e["environmentId"] == identity()["environmentId"]]
+    return bool(environments) and all(e.get("status") == "RESOURCE_STATUS_HEALTHY" for e in environments)
+
+
+def namespace_pods(namespace):
+    return json.loads(kube("-n", namespace, "get", "pods", "-o", "json", timeout=30))["items"]
+
+
+def scheduling_failure(pod):
+    for condition in pod["status"].get("conditions", []):
+        # The scheduler writes the message of its latest FailedScheduling event here.
+        if condition["type"] == "PodScheduled" and condition.get("reason") == "Unschedulable":
+            return condition.get("message", "").split(" preemption:")[0]
+    return None
+
+
+def pod_reason(pod):
+    status = pod["status"]
+    parts = [failure] if (failure := scheduling_failure(pod)) else []
+    for container in status.get("initContainerStatuses", []) + status.get("containerStatuses", []):
+        state = container.get("state", {})
+        reason = (state.get("waiting") or state.get("terminated") or {}).get("reason")
+        if reason == "Completed" or (not reason and container.get("ready")):
+            continue
+        reason = reason or "not ready"
+        last = container.get("lastState", {}).get("terminated", {}).get("reason")
+        if last and last != reason:
+            reason += ", last " + last
+        parts.append(f"{container['name']} {reason}, restarts {container.get('restartCount', 0)}")
+    return status.get("phase", "Unknown") + (": " + "; ".join(parts) if parts else "")
+
+
+def pod_reasons(ids):
+    """Describes each service's pods, and names the services whose every pod the scheduler cannot place."""
+    pods = {name: [] for name in ids}
+    for pod in namespace_pods(app_namespace()):
+        for name, resource_id in ids.items():
+            if pod["metadata"]["name"].startswith(f"resource-{resource_id}-"):
+                pods[name].append(pod)
+    reasons = {name: "; ".join(dict.fromkeys(map(pod_reason, found))) or "no pods" for name, found in pods.items()}
+    unschedulable = {name for name, found in pods.items() if found and all(map(scheduling_failure, found))}
+    return reasons, unschedulable
+
+
+def check_health(ids):
+    """Waits for every service under one deadline and records a health result for each."""
+    started = time.monotonic()
+    deadline = started + READY_SECONDS
+    pending, errors = {}, {}
+    for name, resource_id in ids.items():
+        try:
+            check_health_semantics(name, resource_id)
+            pending[name] = resource_id
+        except Exception as exc:
+            save_result("health:" + name, "FAIL", str(exc), started)
+    print(f"WAIT {len(pending)} services healthy through GetResource (timeout {READY_SECONDS}s)", flush=True)
+    next_update, stalled, stalled_since = started + PROGRESS_SECONDS, None, None
+    while pending:
+        for name, resource_id in list(pending.items()):
+            try:
+                if resource_healthy(resource_id):
+                    del pending[name]
+                    save_result("health:" + name, "PASS",
+                                "GetResource reports healthy with the configured health semantics", started)
+            except RETRYABLE as exc:
+                errors[name] = exc
+        now = time.monotonic()
+        if not pending:
+            break
+        if now < next_update and now < deadline:
+            time.sleep(3)
+            continue
+        print(f"WAIT {len(ids) - len(pending)}/{len(ids)} healthy ({now - started:.0f}s elapsed); "
+              f"waiting for {', '.join(pending)}", flush=True)
+        next_update = now + PROGRESS_SECONDS
+        try:
+            reasons, unschedulable = pod_reasons(pending)
+        except (RuntimeError, OSError, subprocess.TimeoutExpired) as exc:
+            reasons, unschedulable = dict.fromkeys(pending, f"pod status unavailable: {exc}"), set()
+        if unschedulable != set(pending):
+            stalled = None
+        elif reasons != stalled:
+            stalled, stalled_since = reasons, now
+        stuck = {name for name, reason in reasons.items() if "OOMKilled" in reason or "ImagePullBackOff" in reason}
+        if now >= deadline or (stalled and now - stalled_since >= STALL_SECONDS):
+            stuck = set(pending)
+        for name in stuck:
+            error = f"; latest error: {errors[name]}" if name in errors else ""
+            save_result("health:" + name, "FAIL", reasons[name] + error, started)
+            del pending[name]
 
 
 def check_no_builds(ids):
@@ -769,8 +863,7 @@ def check_observability_scope():
 
 def verify():
     ids = resources()
-    for name, resource_id in ids.items():
-        record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid))
+    check_health(ids)
     record("no-builds", lambda: check_no_builds(ids))
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
@@ -801,7 +894,7 @@ def diagnostics():
             namespaces.append(app_namespace())
         for ns in namespaces:
             with contextlib.suppress(Exception):
-                for pod in json.loads(kube("-n", ns, "get", "pods", "-o", "json"))["items"]:
+                for pod in namespace_pods(ns):
                     name = pod["metadata"]["name"]
                     kube("-n", ns, "logs", name, "--all-containers", "--tail=100",
                          check=False, timeout=20, log=OUT / "pods" / (name + ".log"))
