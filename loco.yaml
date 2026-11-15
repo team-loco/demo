@@ -177,7 +177,7 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
+        cpu: 256m
         memory: 256Mi
         replicas:
           min: 1
@@ -227,7 +227,7 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
       us-east-1:
-        cpu: 100m
+        cpu: 256m
         memory: 64Mi
         replicas:
           min: 1
@@ -288,7 +288,7 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
+        cpu: 256m
         memory: 128Mi
         replicas:
           min: 1
