@@ -20,5 +20,4 @@ services:
         replicas:
           min: 1
           max: 1
-    context: source
-    dockerfile: src/payment/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-payment@sha256:10d6bd20d8a00abe7705d553ab23a4f35e29b2816ab021049e63e89d07cc9192

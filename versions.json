@@ -2,7 +2,6 @@
   "loco": "0.0.210",
   "upstream": {
     "release": "3.1.0",
-    "commit": "dedc0178918e260823323b8d95005a8cb924b007",
     "chart": "0.42.3",
     "chartSha256": "3c16f3549ea86a85145d7b8db507fe171417d95ebbaf52a9d7f1b668d694ad62",
     "chartUrl": "https://github.com/open-telemetry/opentelemetry-helm-charts/releases/download/opentelemetry-demo-0.42.3/opentelemetry-demo-0.42.3.tgz"

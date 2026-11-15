@@ -6,6 +6,7 @@ import hashlib
 import http.server
 import io
 import json
+import re
 from pathlib import Path
 import tempfile
 import subprocess
@@ -24,32 +25,16 @@ spec.loader.exec_module(demo)
 
 
 class DeploymentContractTests(unittest.TestCase):
-    def test_exactly_half_the_apps_use_cluster_source_builds(self):
-        modes = [app["mode"] for app in demo.APPS.values()]
-        self.assertEqual(modes.count("source"), 8)
-        self.assertEqual(modes.count("image"), 8)
-
-    def test_every_app_has_its_own_partial_and_one_deployment_input(self):
-        for name, app in demo.APPS.items():
+    def test_every_app_has_its_own_partial_and_a_pinned_upstream_image(self):
+        release = demo.VERSIONS["upstream"]["release"]
+        self.assertEqual(len(demo.APPS), 16)
+        for name in demo.APPS:
             with self.subTest(name=name):
                 doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
                 self.assertEqual(doc["partial"], name)
                 self.assertEqual(list(doc["services"]), [name])
-                svc = doc["services"][name]
-                self.assertEqual("image" in svc, app["mode"] == "image")
-                self.assertEqual("dockerfile" in svc, app["mode"] == "source")
-                if app["mode"] == "source":
-                    self.assertTrue((ROOT / "upstream" / svc["dockerfile"]).is_file())
-                    self.assertEqual(svc["context"], "source")
-                else:
-                    self.assertRegex(svc["image"], r":3\.1\.0-[a-z-]+@sha256:[a-f0-9]{64}$")
-
-    def test_grpc_and_worker_apps_leave_health_omitted(self):
-        for name, app in demo.APPS.items():
-            if app["protocol"] in ("grpc", "worker"):
-                config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-                self.assertNotIn("health", config["services"][name], name)
-                self.assertEqual("port" in config["services"][name], app["protocol"] == "grpc", name)
+                self.assertRegex(doc["services"][name]["image"],
+                                 rf"^ghcr\.io/open-telemetry/demo:{re.escape(release)}-{name}@sha256:[a-f0-9]{{64}}$")
 
     def test_no_app_exports_to_upstream_collector(self):
         for name in demo.APPS:
@@ -79,7 +64,7 @@ class DeploymentContractTests(unittest.TestCase):
         for image in [svc["image"] for svc in fixtures.values()] + [demo.VERSIONS["kindImage"]]:
             self.assertRegex(image, r":[^:@]+@sha256:[a-f0-9]{64}$")
 
-    def test_app_requests_leave_cpu_for_builds_and_the_platform(self):
+    def test_app_requests_leave_cpu_for_the_platform(self):
         millicores = 0
         for name in demo.APPS:
             config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
@@ -88,18 +73,11 @@ class DeploymentContractTests(unittest.TestCase):
 
 
 class InstallationTests(unittest.TestCase):
-    def test_installation_pins_the_cluster_release_and_build_egress(self):
-        egress = [{"cidr": "172.18.0.5/32", "port": 5000}]
-        doc = demo.installation("cluster-uid", egress)
+    def test_installation_pins_the_cluster_release(self):
+        doc = demo.installation("cluster-uid")
         self.assertEqual(doc["release"], {"version": demo.LOCO_VERSION})
         self.assertEqual(doc["controlPlane"]["kubernetes"]["clusterUID"], "cluster-uid")
         self.assertEqual(doc["workers"][0]["kubernetes"]["clusterUID"], "cluster-uid")
-        self.assertEqual(doc["workers"][0]["builds"]["privateEgress"], egress)
-        self.assertEqual(demo.INSTALLATION["workers"][0]["builds"]["privateEgress"], [])
-
-    def test_build_egress_allows_only_the_registry_and_storage_ports(self):
-        egress = demo.private_egress({"registry": "172.18.0.5", "s3": "172.18.0.6"})
-        self.assertEqual(egress, [{"cidr": "172.18.0.5/32", "port": 5000}, {"cidr": "172.18.0.6/32", "port": 19000}])
 
     def test_cluster_dns_covers_fixtures_bucket_hosts_and_the_gateway(self):
         addresses = {"postgres": "10.0.0.1", "registry": "10.0.0.2", "s3": "10.0.0.3", "dex": "10.0.0.4"}
@@ -276,14 +254,10 @@ class HarnessTests(unittest.TestCase):
                             demo.check_logs()
                 self.assertEqual((path / "logs-api.json").exists(), succeeds)
 
-    def test_stage_catalog_bakes_the_upstream_declarative_otel_config(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "STATE", Path(tmp)):
-            app = demo.stage_app("product-catalog")
-            self.assertTrue((app / "source/otel-config.yml").exists())
-            dockerfile = app / "source/src/product-catalog/Dockerfile"
-            self.assertIn("COPY otel-config.yml /otel-config.yml", dockerfile.read_text())
-            demo.stage_app("product-catalog")
-            self.assertEqual(dockerfile.read_text().count("COPY otel-config.yml /otel-config.yml"), 1)
+    def test_a_resource_with_any_build_fails_the_image_only_check(self):
+        with patch.object(demo, "list_api", side_effect=[[], [{"status": "BUILD_STATUS_SUCCEEDED"}]]):
+            with self.assertRaisesRegex(RuntimeError, "cart should run its prebuilt image"):
+                demo.check_no_builds({"ad": "ad-id", "cart": "cart-id"})
 
     def test_failures_are_recorded_and_secret_values_are_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -344,6 +318,16 @@ class HarnessTests(unittest.TestCase):
             compose.assert_not_called()
             self.assertTrue((Path(tmp) / "kubeconfig").exists())
 
+    def test_down_keeps_ownership_until_the_cluster_is_gone(self):
+        for kind in [RuntimeError("kind delete failed"), ["", "loco-demo\n"]]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp, \
+                 patch.object(demo, "STATE", Path(tmp)), patch.object(demo, "compose"), \
+                 patch.object(demo, "run", side_effect=kind):
+                demo.write_yaml(Path(tmp) / "owner.yaml", {"root": str(demo.ROOT)})
+                with self.assertRaises(RuntimeError):
+                    demo.down()
+                self.assertTrue(demo.owns_infrastructure())
+
     def test_failed_checks_do_not_stop_later_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -351,7 +335,7 @@ class HarnessTests(unittest.TestCase):
             with patch.object(demo, "STATE", directory), patch.object(demo, "OUT", directory), \
                  patch.object(demo, "RESULTS", []), \
                  patch.object(demo, "check_resource", side_effect=RuntimeError("CreateContainerConfigError")), \
-                 patch.object(demo, "check_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
+                 patch.object(demo, "check_no_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
                  patch.object(demo, "traffic", return_value="checked"), patch.object(demo, "check_logs", return_value="checked"), \
                  patch.object(demo, "check_metrics", side_effect=RuntimeError("token expired")), \
                  patch.object(demo, "check_traces", return_value="checked"), patch.object(demo, "check_kafka", return_value="checked"):
@@ -363,10 +347,10 @@ class HarnessTests(unittest.TestCase):
 
 class PublicTelemetryTests(unittest.TestCase):
     trace_id = "a" * 32
-    resources = {name: name + "-id" for name in ["frontend", "checkout", "payment", "shipping", "product-catalog"]}
+    resources = {name: name + "-id" for name in ["frontend", "checkout", "payment", "shipping"]}
 
     def spans(self):
-        parents = [None, 1, 2, 2, 2]
+        parents = [None, 1, 2, 2]
         return [{"traceId": self.trace_id, "spanId": f"{index:016x}",
                  "parentSpanId": f"{parent:016x}" if parent else "",
                  "resourceId": resource, "workspaceId": "workspace", "environmentId": "environment",

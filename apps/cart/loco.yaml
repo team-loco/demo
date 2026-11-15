@@ -21,5 +21,4 @@ services:
         replicas:
           min: 1
           max: 1
-    context: source
-    dockerfile: src/cart/src/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-cart@sha256:17c881cf29af5032e47d3dbd677afb132cbde66aad6355c7c2af8a6dbfc80581
