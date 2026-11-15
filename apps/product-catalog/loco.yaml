@@ -16,7 +16,6 @@ services:
       OTEL_TRACES_SAMPLER: always_on
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
-      OTEL_CONFIG_FILE: /otel-config.yml
     regions:
       us-east-1:
         cpu: 100m
@@ -24,5 +23,4 @@ services:
         replicas:
           min: 1
           max: 1
-    context: source
-    dockerfile: src/product-catalog/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-product-catalog@sha256:7578cbf65fa4f0fc68e077e4f299ecccaa31d9778d407e41ab5973d247fd4b8e

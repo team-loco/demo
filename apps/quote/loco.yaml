@@ -20,5 +20,4 @@ services:
         replicas:
           min: 1
           max: 1
-    context: source
-    dockerfile: src/quote/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-quote@sha256:e0b1ab3784fdbf0112521d3c5c733643f1cefa4eef5f592f845977465400181e

@@ -47,13 +47,20 @@ DOMAIN = "loco-demo.localhost"
 FIXTURES = ["postgres", "registry", "s3", "dex"]
 DEMO_EMAIL = "demo@example.test"
 DEMO_PASSWORD = "demo-password"
+# The first shopper in upstream's load-generator people.json.
+CUSTOMER = {
+    "email": "larry_sergei@example.com",
+    "address": {"streetAddress": "1600 Amphitheatre Parkway", "zipCode": "94043", "city": "Mountain View",
+                "state": "CA", "country": "United States"},
+    "userCurrency": "USD",
+    "creditCard": {"creditCardNumber": "4432-8015-6152-0454", "creditCardExpirationMonth": 1,
+                   "creditCardExpirationYear": 2039, "creditCardCvv": 672},
+}
 # Defaults of the loco-worker chart.
 WORKSPACE_NAMESPACE_PREFIX = "loco-ws-"
-BUILD_NAMESPACE = "loco-builds"
 READY_SECONDS = 600
 INSTALL_SECONDS = 2400
 TELEMETRY_SECONDS = 240
-BUILD_SECONDS = 2100
 PROGRESS_SECONDS = 15
 RESULTS = []
 INFRA_STARTED = False
@@ -230,41 +237,32 @@ def prepare():
     print(f"Loco {LOCO_VERSION} CLIs match the release checksums; upstream chart prepared", flush=True)
 
 
-def stage_app(name):
-    doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-    dest = STATE / "work" / name
-    dest.mkdir(parents=True, exist_ok=True)
-    write_yaml(dest / "loco.yaml", doc)
-    (dest / ".dockerignore").write_text("source/src/**/node_modules\nsource/**/__pycache__\n")
-    if APPS[name]["mode"] == "source" and not (dest / "source").exists():
-        shutil.copytree(ROOT / "upstream", dest / "source")
-        if name == "product-catalog":
-            dockerfile = dest / "source" / APPS[name]["dockerfile"]
-            with dockerfile.open("a") as stream:
-                stream.write("\nCOPY otel-config.yml /otel-config.yml\n")
-    return dest
+def app_file(name):
+    return ROOT / "apps" / name / "loco.yaml"
 
 
-def installation(cluster_uid, private_egress):
+def app_service(name):
+    return yaml.safe_load(app_file(name).read_text())["services"][name]
+
+
+def installation(cluster_uid):
     doc = copy.deepcopy(INSTALLATION)
     doc["release"] = {"version": LOCO_VERSION}
     for target in [doc["controlPlane"], *doc["workers"]]:
         target["kubernetes"]["clusterUID"] = cluster_uid
-    doc["workers"][0]["builds"]["privateEgress"] = private_egress
     return doc
 
 
 def validate():
     for name in APPS:
-        stage_app(name)
-        result = run([binary("loco"), "infra", "validate", STATE / "work" / name / "loco.yaml"], check=False)
+        result = run([binary("loco"), "infra", "validate", app_file(name)], check=False)
         if result.returncode:
             raise RuntimeError(f"{name}: {result.stdout}")
     rendered = run(["helm", "template", "astronomy", CACHE / "charts" / "opentelemetry-demo",
                     "--namespace", "demo-chart-validation", "-f", CONFIG / "demo-infrastructure.yaml"])
     assert_infrastructure_only([d for d in yaml.safe_load_all(rendered) if d])
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    write_yaml(STATE / "installation-check.yaml", installation(str(uuid.uuid4()), []))
+    write_yaml(STATE / "installation-check.yaml", installation(str(uuid.uuid4())))
     run([binary("locoadm"), "validate", "--file", STATE / "installation-check.yaml"])
     print("Validated all 16 loco.yaml files, the infrastructure-only chart and installation.yaml", flush=True)
 
@@ -301,23 +299,6 @@ def configure_cluster_dns(hosts):
     kube("-n", "kube-system", "rollout", "status", "deployment/coredns", "--timeout=120s")
 
 
-def configure_registry_mirror(address):
-    endpoint = urllib.parse.urlsplit(CONTROL_PLANE["registry"]["endpoint"])
-    config = f'server = "{endpoint.geturl()}"\n[host."http://{address}:{endpoint.port}"]\n  capabilities = ["pull", "resolve"]\n'
-    for node in run(["kind", "get", "nodes", "--name", CLUSTER]).split():
-        directory = f"/etc/containerd/certs.d/{endpoint.netloc}"
-        run(["docker", "exec", node, "mkdir", "-p", directory])
-        run(["docker", "exec", "-i", node, "tee", directory + "/hosts.toml"], input=config)
-
-
-def private_egress(addresses):
-    egress = []
-    for name, endpoint in [("registry", CONTROL_PLANE["registry"]["endpoint"]),
-                           ("s3", CONTROL_PLANE["sourceBucket"]["endpoint"])]:
-        egress.append({"cidr": addresses[name] + "/32", "port": urllib.parse.urlsplit(endpoint).port})
-    return egress
-
-
 def start_fixtures():
     with step("Start PostgreSQL, registry, S3 storage and Dex"):
         compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
@@ -328,8 +309,6 @@ def start_fixtures():
         kube("apply", "-f", CONFIG / "inputs.yaml", "-f", CONFIG / "gateway.yaml")
         gateway = kube("-n", "loco-system", "get", "service", "loco-demo-gateway", "-o", "jsonpath={.spec.clusterIP}")
         configure_cluster_dns(cluster_hosts(addresses, gateway.strip()))
-        configure_registry_mirror(addresses["registry"])
-    return addresses
 
 
 class LoginForm(html.parser.HTMLParser):
@@ -423,9 +402,9 @@ def up():
         run(["kind", "create", "cluster", "--name", CLUSTER, "--image", VERSIONS["kindImage"],
              "--config", CONFIG / "kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
-    addresses = start_fixtures()
+    start_fixtures()
     uid = kube("get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}").strip()
-    write_yaml(STATE / "installation.yaml", installation(uid, private_egress(addresses)))
+    write_yaml(STATE / "installation.yaml", installation(uid))
     install_loco(STATE / "installation.yaml")
     print(f"Loco is running. Dashboard: {CONTROL_PLANE['webURL']} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
@@ -517,14 +496,9 @@ def record_resources():
 
 
 def deploy_one(name):
-    stage_app(name)
-    image_args = []
-    if APPS[name]["mode"] == "image":
-        image_args = ["--image", yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())["services"][name]["image"]]
-    with step(f"Deploy {name} ({APPS[name]['mode']})"):
-        output = loco("deploy", "--file", STATE / "work" / name / "loco.yaml", *image_args,
-                      "--yes", "--confirm-import", "--env", "production",
-                      timeout=BUILD_SECONDS, log=OUT / f"deploy-{name}.log")
+    with step(f"Deploy {name}"):
+        output = loco("deploy", "--file", app_file(name), "--image", app_service(name)["image"],
+                      "--yes", "--confirm-import", "--env", "production", log=OUT / f"deploy-{name}.log")
     return output[-1500:]
 
 
@@ -590,7 +564,7 @@ def observability_rpc(method, request, token=None):
 
 
 def check_resource(name, resource_id):
-    configured = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())["services"][name]
+    configured = app_service(name)
     resource = api("loco.resource.v1.ResourceService/GetResource", {"resourceId": resource_id})["resource"]
     reported = resource.get("spec", {}).get("service", {}).get("healthCheck")
     if "health" not in configured and reported:
@@ -604,14 +578,12 @@ def check_resource(name, resource_id):
     return "GetResource reports healthy with the configured health semantics"
 
 
-def check_builds(ids):
-    for name, meta in APPS.items():
-        builds = list_api("loco.build.v1.BuildService/ListBuilds", {"resourceId": ids[name], "pageSize": 200}, "builds")
-        if meta["mode"] == "source" and not any(b["status"] == "BUILD_STATUS_SUCCEEDED" for b in builds):
-            raise RuntimeError(f"{name} has no succeeded cluster build: {builds}")
-        if meta["mode"] == "image" and builds:
-            raise RuntimeError(f"{name} should use a prebuilt image but created builds: {builds}")
-    return "Eight source apps have successful builds; eight image apps have no builds"
+def check_no_builds(ids):
+    for name, resource_id in ids.items():
+        builds = list_api("loco.build.v1.BuildService/ListBuilds", {"resourceId": resource_id, "pageSize": 200}, "builds")
+        if builds:
+            raise RuntimeError(f"{name} should run its prebuilt image but created builds: {builds}")
+    return "All 16 apps run prebuilt images; none created a build"
 
 
 def traffic():
@@ -637,8 +609,7 @@ def traffic():
         cart = request("/api/cart", {"userId": user_id, "item": {"productId": products[0]["id"], "quantity": 1}})
         if not cart.get("items"):
             raise RuntimeError("Add-to-cart response contains no items")
-        person = json.loads((ROOT / "upstream/src/load-generator/people.json").read_text())[0]
-        person["userId"] = user_id
+        person = {**CUSTOMER, "userId": user_id}
         if not request("/api/recommendations?currencyCode=USD"):
             raise RuntimeError("Recommendation service returned no products")
         order = {}
@@ -748,7 +719,7 @@ def connected_checkout_trace(spans, trace_id, ids):
         if span_id in by_id and by_id[span_id] != signature:
             raise RuntimeError("GetTrace returned conflicting duplicate span IDs")
         by_id[span_id] = signature
-    required = {ids[name] for name in ["frontend", "checkout", "payment", "shipping", "product-catalog"]}
+    required = {ids[name] for name in ["frontend", "checkout", "payment", "shipping"]}
     neighbors = {span_id: set() for span_id in by_id}
     for span_id, (parent, _) in by_id.items():
         if parent in by_id:
@@ -780,7 +751,7 @@ def check_traces():
         (OUT / "traces-api.json").write_text(json.dumps({"traceId": trace_id, "spans": spans}, indent=2) + "\n")
         return True
     wait_for("connected checkout trace through GetTrace", observed, TELEMETRY_SECONDS)
-    return "GetTrace links frontend, checkout, payment, shipping and product-catalog spans by parent IDs"
+    return "GetTrace links frontend, checkout, payment and shipping spans by parent IDs"
 
 
 def check_observability_scope():
@@ -811,7 +782,7 @@ def verify():
     ids = resources()
     for name, resource_id in ids.items():
         record("health:" + name, lambda name=name, rid=resource_id: check_resource(name, rid))
-    record("build-matrix", lambda: check_builds(ids))
+    record("no-builds", lambda: check_no_builds(ids))
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
         record("logs-api", check_logs)
@@ -833,11 +804,10 @@ def diagnostics():
             (["get", "pods", "-A", "-o", "wide"], "pods"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),
             (["get", "applications", "-A", "-o", "yaml"], "applications"),
-            (["-n", BUILD_NAMESPACE, "get", "builds", "-o", "yaml"], "builds"),
         ]:
             with contextlib.suppress(Exception):
                 kube(*args, check=False, timeout=30, log=OUT / (name + ".log"))
-        namespaces = [CONTROL_PLANE["kubernetes"]["namespace"], WORKER["kubernetes"]["namespace"], BUILD_NAMESPACE]
+        namespaces = [CONTROL_PLANE["kubernetes"]["namespace"], WORKER["kubernetes"]["namespace"]]
         if (STATE / "identity.json").exists():
             namespaces.append(app_namespace())
         for ns in namespaces:
@@ -889,7 +859,7 @@ Observed failure:
 {redact(str(failure['detail']))}
 ```
 
-Expected: locoadm installs Loco, all 16 apps deploy through Loco (eight cluster builds and eight prebuilt images), checkout succeeds, and its trace, metrics and logs are queryable through the API.
+Expected: locoadm installs Loco, all 16 apps deploy through Loco from prebuilt images, checkout succeeds, and its trace, metrics and logs are queryable through the API.
 
 Local evidence is in `artifacts/evidence.md` and the per-step logs. CI retains these artifacts. This report identifies the failing check; its cause may be a harness defect and needs triage before changing Loco.
 """)

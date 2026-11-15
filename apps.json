@@ -1,98 +1,66 @@
 {
   "accounting": {
-    "mode": "source",
     "port": null,
-    "protocol": "worker",
-    "dockerfile": "src/accounting/Dockerfile"
-  },
-  "cart": {
-    "mode": "source",
-    "port": 7070,
-    "protocol": "grpc",
-    "dockerfile": "src/cart/src/Dockerfile"
-  },
-  "checkout": {
-    "mode": "source",
-    "port": 5050,
-    "protocol": "grpc",
-    "dockerfile": "src/checkout/Dockerfile"
-  },
-  "payment": {
-    "mode": "source",
-    "port": 50051,
-    "protocol": "grpc",
-    "dockerfile": "src/payment/Dockerfile"
-  },
-  "product-catalog": {
-    "mode": "source",
-    "port": 3550,
-    "protocol": "grpc",
-    "dockerfile": "src/product-catalog/Dockerfile"
-  },
-  "quote": {
-    "mode": "source",
-    "port": 8090,
-    "protocol": "http",
-    "dockerfile": "src/quote/Dockerfile"
-  },
-  "recommendation": {
-    "mode": "source",
-    "port": 9001,
-    "protocol": "grpc",
-    "dockerfile": "src/recommendation/Dockerfile"
-  },
-  "shipping": {
-    "mode": "source",
-    "port": 50050,
-    "protocol": "http",
-    "dockerfile": "src/shipping/Dockerfile"
+    "protocol": "worker"
   },
   "ad": {
-    "mode": "image",
     "port": 9555,
-    "protocol": "grpc",
-    "dockerfile": null
+    "protocol": "grpc"
+  },
+  "cart": {
+    "port": 7070,
+    "protocol": "grpc"
+  },
+  "checkout": {
+    "port": 5050,
+    "protocol": "grpc"
   },
   "currency": {
-    "mode": "image",
     "port": 7001,
-    "protocol": "grpc",
-    "dockerfile": null
+    "protocol": "grpc"
   },
   "email": {
-    "mode": "image",
     "port": 6060,
-    "protocol": "http",
-    "dockerfile": null
+    "protocol": "http"
   },
   "fraud-detection": {
-    "mode": "image",
     "port": null,
-    "protocol": "worker",
-    "dockerfile": null
+    "protocol": "worker"
   },
   "frontend": {
-    "mode": "image",
     "port": 8080,
-    "protocol": "http",
-    "dockerfile": null
+    "protocol": "http"
   },
   "frontend-proxy": {
-    "mode": "image",
     "port": 8080,
-    "protocol": "http",
-    "dockerfile": null
+    "protocol": "http"
   },
   "image-provider": {
-    "mode": "image",
     "port": 8081,
-    "protocol": "http",
-    "dockerfile": null
+    "protocol": "http"
   },
   "load-generator": {
-    "mode": "image",
     "port": 8089,
-    "protocol": "http",
-    "dockerfile": null
+    "protocol": "http"
+  },
+  "payment": {
+    "port": 50051,
+    "protocol": "grpc"
+  },
+  "product-catalog": {
+    "port": 3550,
+    "protocol": "grpc"
+  },
+  "quote": {
+    "port": 8090,
+    "protocol": "http"
+  },
+  "recommendation": {
+    "port": 9001,
+    "protocol": "grpc"
+  },
+  "shipping": {
+    "port": 50050,
+    "protocol": "http"
   }
 }

@@ -51,7 +51,7 @@ mise run e2e
 | `mise run test` | Runs the runner's unit tests. |
 | `mise run validate` | Validates the 16 `loco.yaml` files, the rendered upstream chart and `installation.yaml`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
-| `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and runs `loco deploy` for every service. |
+| `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and runs `loco deploy --image` for every service. Each deploy takes under a second; the pods then pull their images and start. |
 | `mise run verify` | Runs the checks below. |
 | `mise run down` | Deletes the cluster and fixtures this checkout created. |
 | `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
@@ -75,35 +75,28 @@ The runner creates its own `loco-demo` kind cluster and never uses your current 
 | Area | Check |
 | --- | --- |
 | Installation | `locoadm` installs the control plane, bootstraps the administrator through a Dex password login, attaches the worker, and `status` reports `running`. |
-| Builds and deployments | All 16 services deploy; eight build from source on the cluster and eight run prebuilt images, and every resource reports healthy. |
+| Deployments | All 16 services deploy from prebuilt images without a build, and every resource reports healthy. |
 | Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
 | Logs | `QueryLogs` returns the checkout order from both SDK-pushed OTLP logs and container stdout. |
 | Metrics | `QueryMetrics` reports the payment transaction counter increasing after checkout. |
-| Traces | `GetTrace` returns a connected checkout trace across frontend, checkout, payment, shipping and product-catalog. |
+| Traces | `GetTrace` returns a connected checkout trace across frontend, checkout, payment and shipping. |
 | Access control | A token scoped to the demo workspace cannot query another workspace's logs, metrics or traces. |
 
-Telemetry checks use `loco.observability.v1.ObservabilityService` with a workspace-scoped token from `TokenService`. The demo does not run `locoadm verify`: it needs the application domain's self-signed certificate trusted by `locoadm`, and on macOS that means adding it to the keychain. The deployment checks cover the same build, deploy and log paths.
+Telemetry checks use `loco.observability.v1.ObservabilityService` with a workspace-scoped token from `TokenService`. The demo does not run `locoadm verify`: it needs the application domain's self-signed certificate trusted by `locoadm`, and on macOS that means adding it to the keychain. The deployment checks cover the same deploy and log paths.
 
 Evidence and per-step logs go to `artifacts/`; credentials and identifiers stay in the ignored `.state/` directory.
 
 ## Application services
 
-Each service has its own deployment configuration under [`apps/`](apps/). [`apps.json`](apps.json) records the build mode, port and protocol.
+Each service has its own deployment configuration under [`apps/`](apps/). [`apps.json`](apps.json) records its port and protocol.
 
-| Built from source on Loco | Deployed from prebuilt images |
-| --- | --- |
-| accounting | ad |
-| cart | currency |
-| checkout | email |
-| payment | fraud-detection |
-| product-catalog | frontend |
-| quote | frontend-proxy |
-| recommendation | image-provider |
-| shipping | load-generator |
+Every service runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in its `loco.yaml` and passed to `loco deploy --image`. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
 
-Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Source deployments use the retained upstream Dockerfiles; prebuilt deployments pass an immutable image reference to `loco deploy --image`. Services whose images default to root declare numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`.
+Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Services whose images default to root or to a named user declare numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`.
 
-The retained upstream sources are in [`upstream/`](upstream/). See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
+product-catalog configures its OpenTelemetry SDK only from the file `OTEL_CONFIG_FILE` names, and upstream mounts that file into the container. `loco.yaml` cannot mount files, so product-catalog runs without it and sends no telemetry; the trace check covers the other services in the checkout path.
+
+See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
 ## Versions
 
@@ -119,4 +112,4 @@ The runner files each failed check in [`team-loco/loco`](https://github.com/team
 
 ## Upstream attribution
 
-Astronomy Shop comes from the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo). This repository adapts its application services for Loco and retains their [Apache 2.0 license](upstream/LICENSE) and copyright headers.
+Astronomy Shop comes from the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo). This repository runs its published images and chart under their [Apache 2.0 license](https://github.com/open-telemetry/opentelemetry-demo/blob/main/LICENSE).

@@ -19,5 +19,4 @@ services:
         replicas:
           min: 1
           max: 1
-    context: source
-    dockerfile: src/accounting/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-accounting@sha256:bfd9d13ac58a4eb5eb5130aa9ac1920686e2214030f4f2ab8bf178121879fcd9

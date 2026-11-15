@@ -25,5 +25,4 @@ services:
       timeout: 5
       failThreshold: 3
       startupGracePeriod: 60
-    context: source
-    dockerfile: src/shipping/Dockerfile
+    image: ghcr.io/open-telemetry/demo:3.1.0-shipping@sha256:7130dba0e77e90575b3f04fa8be39182cffe05f39df586a6620e9d221ee31e77
