@@ -1,7 +1,7 @@
 issuer: http://dex.loco-demo.localhost:15556/dex
 storage: {type: memory}
 web: {http: 0.0.0.0:15556, allowedOrigins: ["http://console.loco-demo.localhost"]}
-oauth2: {skipApprovalScreen: true}
+oauth2: {skipApprovalScreen: true, passwordConnector: local}
 enablePasswordDB: true
 staticPasswords:
   - email: demo@example.test
@@ -13,6 +13,4 @@ staticClients:
   - id: loco
     name: Loco demo
     public: true
-    redirectURIs:
-      - http://console.loco-demo.localhost/auth/callback
-      - http://127.0.0.1:8400/callback
+    redirectURIs: [http://console.loco-demo.localhost/auth/callback]

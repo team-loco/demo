@@ -6,19 +6,21 @@ Astronomy Shop is a microservices application where users browse products, add i
 
 ## Install Loco
 
-An operator installs Loco from one file, [`config/installation.yaml`](config/installation.yaml):
+An operator installs Loco from one file, [`loco-install.yaml`](loco-install.yaml), which `locoadm` reads from the current directory:
 
 ```sh
-locoadm validate  --file installation.yaml
-locoadm apply     --file installation.yaml   # stops until the certificate issuer exists
-kubectl apply     -f config/issuer.yaml
-locoadm apply     --file installation.yaml   # installs the control plane
-locoadm bootstrap --file installation.yaml --email demo@example.test
-locoadm apply     --file installation.yaml   # attaches the worker
-locoadm status    --file installation.yaml
+locoadm validate
+locoadm apply            # stops until the certificate issuer exists
+kubectl apply -f config/issuer.yaml
+locoadm apply            # installs the control plane
+locoadm login --device   # signs in as demo@example.test
+locoadm cluster attach   # attaches the worker
+locoadm status
 ```
 
-The first `apply` installs cert-manager and Envoy Gateway, then stops because the ClusterIssuer it names does not exist yet. `bootstrap` signs the first administrator in through the identity provider and saves a CLI session; the last `apply` uses that session to enroll the worker cluster. `status` reports `running` once the worker is ready.
+The first `apply` installs cert-manager and Envoy Gateway, then stops because the ClusterIssuer it names does not exist yet. `controlPlane.admins` lists `demo@example.test`, so its first sign-in becomes a system admin. `login --device` prints a code; the runner approves it through the API's `ApproveDeviceLogin`, the call the dashboard makes, with an ID token from Dex's password grant. `cluster attach` uses that session to enroll the worker cluster. `status` reports `running` once the worker is ready, with no unclaimed admins.
+
+The runner writes a copy of `loco-install.yaml` with the kind cluster's UID to `.state/` and runs `locoadm` there.
 
 `locoadm` reads the pinned Loco release, the Kubernetes contexts, and references to Secrets the operator creates beforehand. The demo supplies these external services as Docker containers next to the kind cluster ([`config/fixtures.yaml`](config/fixtures.yaml)):
 
@@ -49,7 +51,7 @@ mise run e2e
 | --- | --- |
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. |
 | `mise run test` | Runs the runner's unit tests. |
-| `mise run validate` | Validates `loco.yaml`, the rendered upstream chart and `installation.yaml`. |
+| `mise run validate` | Validates `loco.yaml`, the rendered upstream chart and `loco-install.yaml`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
 | `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and deploys the 16 services with one `loco deploy`. The pods then pull their images and start. |
 | `mise run verify` | Runs the checks below. |
@@ -57,7 +59,7 @@ mise run e2e
 | `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
 | `mise run report` | Files failed checks as issues in `team-loco/loco`. |
 
-The CLIs run on the host with `HOME` set to `.state/home` and `LOCO_CREDENTIAL_STORE=file`, so the session `bootstrap` saves lives in `.state/home/.loco` and never touches your own `~/.loco` or keychain. To use it yourself:
+The CLIs run on the host with `HOME` set to `.state/home` and `LOCO_CREDENTIAL_STORE=file`, so the session `locoadm login` saves lives in `.state/home/.loco` and never touches your own `~/.loco` or keychain. To use it yourself:
 
 ```sh
 export HOME=$PWD/.state/home LOCO_CREDENTIAL_STORE=file
@@ -72,7 +74,7 @@ The runner creates its own `loco-demo` kind cluster and never uses your current 
 
 | Area | Check |
 | --- | --- |
-| Installation | `locoadm` installs the control plane, bootstraps the administrator through a Dex password login, attaches the worker, and `status` reports `running`. |
+| Installation | `locoadm` installs the control plane, signs in the configured admin, attaches the worker, and `status` reports `running` with no unclaimed admins. |
 | Deployments | All 16 services deploy and every resource reports healthy. |
 | Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
 | Logs | `QueryLogs` returns the checkout order from both SDK-pushed OTLP logs and container stdout. |
