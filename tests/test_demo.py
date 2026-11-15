@@ -71,9 +71,8 @@ class DeploymentContractTests(unittest.TestCase):
 
 
 class InstallationTests(unittest.TestCase):
-    def test_installation_pins_the_cluster_release(self):
+    def test_installation_pins_the_cluster(self):
         doc = demo.installation("cluster-uid")
-        self.assertEqual(doc["release"], {"version": demo.LOCO_VERSION})
         self.assertEqual(doc["controlPlane"]["kubernetes"]["clusterUID"], "cluster-uid")
         self.assertEqual(doc["workers"][0]["kubernetes"]["clusterUID"], "cluster-uid")
 
@@ -96,17 +95,30 @@ class InstallationTests(unittest.TestCase):
         applied = subprocess.CompletedProcess([], 0, "Control plane is running.")
         with patch.object(demo, "locoadm", side_effect=["", applied]), patch.object(demo, "kube") as kube:
             with self.assertRaisesRegex(RuntimeError, "certificate issuer checkpoint"):
-                demo.install_loco("installation.yaml")
+                demo.install_loco()
         kube.assert_not_called()
 
-    def test_install_fails_unless_status_reports_ready_workers(self):
+    def test_install_fails_unless_status_reports_ready_workers_and_claimed_admins(self):
         checkpoint = subprocess.CompletedProcess([], 1, "configured certificate issuer is missing or not Ready")
-        status = json.dumps({"phase": "workers-pending", "workers": [{"name": "local", "ready": False}]})
-        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "OUT", Path(tmp)), \
-             patch.object(demo, "locoadm", side_effect=["", checkpoint, "", "", status]), \
-             patch.object(demo, "kube"), patch.object(demo, "bootstrap"):
-            with self.assertRaisesRegex(RuntimeError, "running installation"):
-                demo.install_loco("installation.yaml")
+        ready = {"phase": "running", "workers": [{"name": "local", "ready": True}],
+                 "admins": {"checked": True, "unclaimed": []}}
+        cases = [({**ready, "phase": "workers-pending", "workers": [{"name": "local", "ready": False}]}, "running installation"),
+                 ({**ready, "admins": {"checked": True, "unclaimed": [demo.DEMO_EMAIL]}}, "unclaimed admins"),
+                 ({**ready, "admins": {"checked": False, "unclaimed": []}}, "unclaimed admins"),
+                 (ready, None)]
+        for status, error in cases:
+            with self.subTest(error=error, status=status), tempfile.TemporaryDirectory() as tmp, \
+                 patch.object(demo, "OUT", Path(tmp)), \
+                 patch.object(demo, "locoadm", side_effect=["", checkpoint, "", "", json.dumps(status)]) as locoadm, \
+                 patch.object(demo, "kube"), patch.object(demo, "login") as login, \
+                 patch.object(demo.urllib.request, "urlopen", return_value=io.BytesIO(b"<html>")):
+                if error:
+                    with self.assertRaisesRegex(RuntimeError, error):
+                        demo.install_loco()
+                else:
+                    demo.install_loco()
+                login.assert_called_once()
+                self.assertEqual(locoadm.call_args_list[3].args, ("cluster", "attach"))
 
     def test_cli_reports_the_created_id(self):
         self.assertEqual(demo.created_id('Workspace "shop" created successfully (ID: 0d3f6a3c-79e1-4a39-9a1b-6f3c2b1d9e8f)\n'),
@@ -140,45 +152,49 @@ class FakeDex(http.server.BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-    def do_GET(self):
-        if self.path.startswith("/auth?"):
-            self.send_response(302)
-            self.send_header("Location", "/auth/local?state=abc")
-            self.end_headers()
-        else:
-            body = (b'<form method="post" action="/auth/local/login?state=abc">'
-                    b'<input name="login"><input type="password" name="password"></form>')
-            if self.path.startswith("/callback"):
-                body = b"Return to locoadm"
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(body)
-
     def do_POST(self):
         length = int(self.headers["Content-Length"])
-        FakeDex.submitted.append(urllib.parse.parse_qs(self.rfile.read(length).decode()))
-        self.send_response(303)
-        self.send_header("Location", "/callback?code=issued&state=abc")
+        FakeDex.submitted.append((self.path, urllib.parse.parse_qs(self.rfile.read(length).decode())))
+        self.send_response(200)
         self.end_headers()
+        self.wfile.write(json.dumps({"id_token": "dex-id-token"}).encode())
 
 
-class SignInTests(unittest.TestCase):
-    def test_password_login_returns_to_the_bootstrap_callback(self):
+class LoginTests(unittest.TestCase):
+    def test_dex_password_grant_returns_the_id_token(self):
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), FakeDex)
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        base = f"http://127.0.0.1:{server.server_port}"
-        control_plane = {**demo.CONTROL_PLANE, "auth": {**demo.CONTROL_PLANE["auth"], "bootstrapRedirectURI": base + "/callback"}}
+        auth = {**demo.CONTROL_PLANE["auth"], "issuer": f"http://127.0.0.1:{server.server_port}/dex"}
         try:
-            with patch.object(demo, "CONTROL_PLANE", control_plane):
-                demo.sign_in(base + "/auth?client_id=loco")
-                with self.assertRaisesRegex(RuntimeError, "password login form"):
-                    demo.sign_in(base + "/callback")
-            with self.assertRaisesRegex(RuntimeError, "did not return to locoadm"):
-                demo.sign_in(base + "/auth?client_id=loco")
+            with patch.object(demo, "CONTROL_PLANE", {**demo.CONTROL_PLANE, "auth": auth}):
+                self.assertEqual(demo.dex_id_token(), "dex-id-token")
         finally:
             server.shutdown()
-        self.assertEqual(FakeDex.submitted[0]["login"], [demo.DEMO_EMAIL])
-        self.assertEqual(FakeDex.submitted[0]["password"], [demo.DEMO_PASSWORD])
+        path, form = FakeDex.submitted[-1]
+        self.assertEqual(path, "/dex/token")
+        self.assertEqual(form["grant_type"], ["password"])
+        self.assertEqual(form["client_id"], ["loco"])
+        self.assertEqual(form["username"], [demo.DEMO_EMAIL])
+        self.assertEqual(form["password"], [demo.DEMO_PASSWORD])
+
+    def test_device_code_is_approved_with_the_dex_id_token(self):
+        cli = ("import sys\n"
+               "print('Open http://console.loco-demo.localhost/cli/device and enter the code BCDF-GHJK', flush=True)\n"
+               "print('Waiting for approval...', flush=True)\n"
+               "sys.exit(int(sys.argv[-1] != '--device'))\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            script = path / "locoadm"
+            script.write_text(f"#!{sys.executable}\n{cli}")
+            script.chmod(0o755)
+            with patch.object(demo, "STATE", path), patch.object(demo, "OUT", path), \
+                 patch.object(demo, "binary", return_value=script), \
+                 patch.object(demo, "dex_id_token", return_value="dex-id-token"), \
+                 patch.object(demo, "rpc") as rpc, redirect_stdout(io.StringIO()):
+                demo.login()
+            self.assertIn("Waiting for approval", (path / "locoadm-login.log").read_text())
+        rpc.assert_called_once_with("loco.auth.v1.AuthService/ApproveDeviceLogin", {"userCode": "BCDF-GHJK"},
+                                    "dex-id-token")
 
 
 class SessionTests(unittest.TestCase):

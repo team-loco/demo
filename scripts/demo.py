@@ -3,7 +3,6 @@ import contextlib
 import copy
 import datetime as dt
 import hashlib
-import html.parser
 import json
 import math
 import os
@@ -34,7 +33,8 @@ VERSIONS = json.loads((ROOT / "versions.json").read_text())
 LOCO_FILE = ROOT / "loco.yaml"
 SERVICES = yaml.safe_load(LOCO_FILE.read_text())["services"]
 LOCO_VERSION = VERSIONS["loco"]
-INSTALLATION = yaml.safe_load((CONFIG / "installation.yaml").read_text())
+INSTALL_FILE = "loco-install.yaml"
+INSTALLATION = yaml.safe_load((ROOT / INSTALL_FILE).read_text())
 CONTROL_PLANE = INSTALLATION["controlPlane"]
 WORKER = INSTALLATION["workers"][0]
 API_URL = CONTROL_PLANE["apiURL"]
@@ -90,15 +90,15 @@ def resources():
     return json.loads((STATE / "resources.json").read_text())
 
 
-def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None):
+def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None, cwd=ROOT):
     args = [str(a) for a in args]
     env = {**os.environ, **(env or {})}
     if log:
         Path(log).parent.mkdir(parents=True, exist_ok=True)
     if stream:
-        result = run_streamed(args, timeout=timeout, env=env, log=log)
+        result = run_streamed(args, timeout=timeout, env=env, log=log, cwd=cwd)
     else:
-        result = subprocess.run(args, cwd=ROOT, input=input, text=True, stdout=subprocess.PIPE,
+        result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, env=env)
         if log:
             Path(log).write_text(redact(result.stdout))
@@ -108,10 +108,10 @@ def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream
     return result.stdout if check else result
 
 
-def run_streamed(args, *, timeout, env, log):
+def run_streamed(args, *, timeout, env, log, cwd):
     output = []
     with Path(log).open("w") as logfile, subprocess.Popen(
-            args, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             start_new_session=True) as process:
         def read_output():
             for line in process.stdout:
@@ -217,8 +217,9 @@ def loco(*args, log=None, timeout=READY_SECONDS):
 
 
 def locoadm(*args, log, check=True, timeout=INSTALL_SECONDS):
+    # locoadm reads loco-install.yaml from its working directory; up writes the cluster's copy to .state.
     return run([binary("locoadm"), *args], env=cli_env(), log=OUT / f"locoadm-{log}.log",
-               check=check, timeout=timeout, stream=True)
+               check=check, timeout=timeout, stream=True, cwd=STATE)
 
 
 def prepare():
@@ -240,7 +241,6 @@ def prepare():
 
 def installation(cluster_uid):
     doc = copy.deepcopy(INSTALLATION)
-    doc["release"] = {"version": LOCO_VERSION}
     for target in [doc["controlPlane"], *doc["workers"]]:
         target["kubernetes"]["clusterUID"] = cluster_uid
     return doc
@@ -254,9 +254,8 @@ def validate():
                     "--namespace", "demo-chart-validation", "-f", CONFIG / "demo-infrastructure.yaml"])
     assert_infrastructure_only([d for d in yaml.safe_load_all(rendered) if d])
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    write_yaml(STATE / "installation-check.yaml", installation(str(uuid.uuid4())))
-    run([binary("locoadm"), "validate", "--file", STATE / "installation-check.yaml"])
-    print("Validated loco.yaml, the infrastructure-only chart and installation.yaml", flush=True)
+    run([binary("locoadm"), "validate"])
+    print(f"Validated loco.yaml, the infrastructure-only chart and {INSTALL_FILE}", flush=True)
 
 
 def assert_infrastructure_only(docs):
@@ -303,75 +302,61 @@ def start_fixtures():
         configure_cluster_dns(cluster_hosts(addresses, gateway.strip()))
 
 
-class LoginForm(html.parser.HTMLParser):
-    def __init__(self):
-        super().__init__()
-        self.action = None
-        self.fields = {}
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        if tag == "form" and self.action is None:
-            self.action = attrs.get("action") or ""
-        elif tag == "input" and attrs.get("name"):
-            self.fields[attrs["name"]] = attrs.get("value") or ""
+DEVICE_CODE = re.compile(r"^Open \S+ and enter the code (\S+)$")
 
 
-def sign_in(authorization_url):
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor())
-    with opener.open(authorization_url, timeout=30) as page:
-        form = LoginForm()
-        form.feed(page.read().decode())
-        login_url = page.geturl()
-    if form.action is None or not {"login", "password"} <= form.fields.keys():
-        raise RuntimeError("Dex did not offer its password login form")
-    fields = {**form.fields, "login": DEMO_EMAIL, "password": DEMO_PASSWORD}
-    with opener.open(urllib.parse.urljoin(login_url, form.action),
-                     data=urllib.parse.urlencode(fields).encode(), timeout=30) as callback:
-        if callback.geturl().split("?")[0] != CONTROL_PLANE["auth"]["bootstrapRedirectURI"]:
-            raise RuntimeError("Dex sign-in did not return to locoadm's callback")
+def dex_id_token():
+    form = {"grant_type": "password", "client_id": CONTROL_PLANE["auth"]["clientId"], "username": DEMO_EMAIL,
+            "password": DEMO_PASSWORD, "scope": "openid email profile"}
+    request = urllib.request.Request(CONTROL_PLANE["auth"]["issuer"] + "/token",
+                                     data=urllib.parse.urlencode(form).encode())
+    with urllib.request.urlopen(request, timeout=30) as response:
+        return json.load(response)["id_token"]
 
 
-def bootstrap(file):
-    args = [binary("locoadm"), "bootstrap", "--file", file, "--email", DEMO_EMAIL, "--no-browser"]
-    with step("locoadm bootstrap"):
-        process = subprocess.Popen([str(a) for a in args], env={**os.environ, **cli_env()},
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+def login():
+    """Runs locoadm login --device and approves its code as the dashboard does, with a Dex ID token."""
+    with step("locoadm login"):
+        process = subprocess.Popen([str(binary("locoadm")), "login", "--device"], cwd=STATE,
+                                   env={**os.environ, **cli_env()}, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True)
+        deadline = threading.Timer(READY_SECONDS, process.kill)
+        deadline.start()
         output = []
         try:
             for line in process.stdout:
                 output.append(line)
                 print(line, end="", flush=True)
-                if line.startswith(("http://", "https://")):
-                    sign_in(line.strip())
-                    break
-            rest, _ = process.communicate(timeout=READY_SECONDS)
-            output.append(rest)
-            print(rest, end="", flush=True)
+                if match := DEVICE_CODE.match(line.strip()):
+                    rpc("loco.auth.v1.AuthService/ApproveDeviceLogin", {"userCode": match.group(1)}, dex_id_token())
+            process.wait()
         finally:
+            deadline.cancel()
             if process.poll() is None:
                 process.kill()
-                process.wait()
-            (OUT / "locoadm-bootstrap.log").write_text(redact("".join(output)))
+            process.wait()
+            (OUT / "locoadm-login.log").write_text(redact("".join(output)))
         if process.returncode:
-            raise RuntimeError("locoadm bootstrap failed:\n" + redact("".join(output)[-3000:]))
+            raise RuntimeError("locoadm login failed:\n" + redact("".join(output)[-3000:]))
 
 
-def install_loco(file):
-    locoadm("validate", "--file", file, log="validate")
-    first = locoadm("apply", "--file", file, log="apply-1", check=False)
+def install_loco():
+    locoadm("validate", log="validate")
+    first = locoadm("apply", log="apply-1", check=False)
     if first.returncode == 0 or "certificate issuer" not in first.stdout:
         raise RuntimeError("The first apply should stop at the certificate issuer checkpoint:\n" + first.stdout[-3000:])
     with step("Create the self-signed ClusterIssuer apply asked for"):
         kube("apply", "-f", CONFIG / "issuer.yaml")
         kube("wait", "--for=condition=Ready", "clusterissuer/loco-demo-selfsigned", "--timeout=120s")
-    locoadm("apply", "--file", file, log="apply-2")
-    bootstrap(file)
-    locoadm("apply", "--file", file, log="apply-3")
-    status = json.loads(locoadm("status", "--file", file, log="status"))
+    locoadm("apply", log="apply-2")
+    login()
+    locoadm("cluster", "attach", log="cluster-attach")
+    status = json.loads(locoadm("status", log="status"))
     (OUT / "installation-status.json").write_text(json.dumps(status, indent=2) + "\n")
     if status["phase"] != "running" or not all(worker["ready"] for worker in status["workers"]):
         raise RuntimeError("locoadm status does not report a running installation: " + json.dumps(status))
+    if not status["admins"]["checked"] or status["admins"]["unclaimed"]:
+        raise RuntimeError("locoadm status reports unclaimed admins: " + json.dumps(status["admins"]))
     with urllib.request.urlopen(CONTROL_PLANE["webURL"], timeout=30) as response:
         if "<html" not in response.read().decode().lower():
             raise RuntimeError("The dashboard did not serve its page")
@@ -396,8 +381,8 @@ def up():
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
     start_fixtures()
     uid = kube("get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}").strip()
-    write_yaml(STATE / "installation.yaml", installation(uid))
-    install_loco(STATE / "installation.yaml")
+    write_yaml(STATE / INSTALL_FILE, installation(uid))
+    install_loco()
     print(f"Loco is running. Dashboard: {CONTROL_PLANE['webURL']} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
 
