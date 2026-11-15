@@ -33,8 +33,12 @@ class DeploymentContractTests(unittest.TestCase):
                 doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
                 self.assertEqual(doc["partial"], name)
                 self.assertEqual(list(doc["services"]), [name])
-                self.assertRegex(doc["services"][name]["image"],
-                                 rf"^ghcr\.io/open-telemetry/demo:{re.escape(release)}-{name}@sha256:[a-f0-9]{{64}}$")
+                upstream = rf"^ghcr\.io/open-telemetry/demo:{re.escape(release)}-{name}@sha256:[a-f0-9]{{64}}$"
+                image = doc["services"][name]["image"]
+                if name == "product-catalog":
+                    self.assertRegex(image, r"^ghcr\.io/team-loco/demo/product-catalog@sha256:[a-f0-9]{64}$")
+                    image = (ROOT / "images/product-catalog/Dockerfile").read_text().splitlines()[0].removeprefix("FROM ")
+                self.assertRegex(image, upstream)
 
     def test_no_app_exports_to_upstream_collector(self):
         for name in demo.APPS:
@@ -347,10 +351,10 @@ class HarnessTests(unittest.TestCase):
 
 class PublicTelemetryTests(unittest.TestCase):
     trace_id = "a" * 32
-    resources = {name: name + "-id" for name in ["frontend", "checkout", "payment", "shipping"]}
+    resources = {name: name + "-id" for name in ["frontend", "checkout", "product-catalog", "payment", "shipping"]}
 
     def spans(self):
-        parents = [None, 1, 2, 2]
+        parents = [None, 1, 2, 2, 2]
         return [{"traceId": self.trace_id, "spanId": f"{index:016x}",
                  "parentSpanId": f"{parent:016x}" if parent else "",
                  "resourceId": resource, "workspaceId": "workspace", "environmentId": "environment",

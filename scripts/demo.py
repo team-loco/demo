@@ -717,7 +717,7 @@ def connected_checkout_trace(spans, trace_id, ids):
         if span_id in by_id and by_id[span_id] != signature:
             raise RuntimeError("GetTrace returned conflicting duplicate span IDs")
         by_id[span_id] = signature
-    required = {ids[name] for name in ["frontend", "checkout", "payment", "shipping"]}
+    required = {ids[name] for name in ["frontend", "checkout", "product-catalog", "payment", "shipping"]}
     neighbors = {span_id: set() for span_id in by_id}
     for span_id, (parent, _) in by_id.items():
         if parent in by_id:
@@ -749,7 +749,7 @@ def check_traces():
         (OUT / "traces-api.json").write_text(json.dumps({"traceId": trace_id, "spans": spans}, indent=2) + "\n")
         return True
     wait_for("connected checkout trace through GetTrace", observed, TELEMETRY_SECONDS)
-    return "GetTrace links frontend, checkout, payment and shipping spans by parent IDs"
+    return "GetTrace links frontend, checkout, product-catalog, payment and shipping spans by parent IDs"
 
 
 def check_observability_scope():
