@@ -1,0 +1,18 @@
+# The values are local fixture credentials.
+apiVersion: v1
+kind: Namespace
+metadata: {name: loco-system}
+---
+apiVersion: v1
+kind: Secret
+metadata: {name: loco-inputs, namespace: loco-system}
+stringData:
+  database-url: postgresql://loco:loco-demo-database@postgres.loco-demo.localhost:5432/loco?sslmode=disable
+  access-key-id: loco-demo
+  secret-access-key: loco-demo-storage
+  api-username: api
+  api-password: loco-demo-api
+  push-username: push
+  push-password: loco-demo-push
+  pull-username: pull
+  pull-password: loco-demo-pull

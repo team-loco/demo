@@ -1,0 +1,16 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  extends: ["config:recommended"],
+  enabledManagers: ["custom.regex"],
+  customManagers: [
+    {
+      customType: "regex",
+      description: "versions.json pins one Loco release: the loco and locoadm binaries and the platform bundle locoadm installs",
+      managerFilePatterns: ["/^versions\\.json$/"],
+      matchStrings: ['"loco": "(?<currentValue>[^"]+)"'],
+      datasourceTemplate: "github-releases",
+      depNameTemplate: "team-loco/loco",
+      extractVersionTemplate: "^v(?<version>.+)$",
+    },
+  ],
+}

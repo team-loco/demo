@@ -13,7 +13,7 @@ services:
       FLAGD_HOST: flagd
       FLAGD_PORT: '8013'
       FRONTEND_ADDR: frontend:8080
-      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_COLLECTOR_HOST: otel-col-deploy.loco-obs.svc.cluster.local
       OTEL_EXPORTER_OTLP_METRICS_DEFAULT_HISTOGRAM_AGGREGATION: explicit_bucket_histogram
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
       PORT: '8080'
@@ -23,7 +23,7 @@ services:
       SHIPPING_ADDR: http://shipping:50050
       WEB_OTEL_SERVICE_NAME: frontend-web
       OTEL_TRACES_SAMPLER: always_on
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:

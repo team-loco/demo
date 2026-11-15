@@ -29,7 +29,7 @@ services:
       LOCUST_WEB_PORT: '8089'
       OPAMP_SERVER_HOST: opamp-server
       OPAMP_SERVER_UI_PORT: '4321'
-      OTEL_COLLECTOR_HOST: otel-col-deploy.observability.svc.cluster.local
+      OTEL_COLLECTOR_HOST: otel-col-deploy.loco-obs.svc.cluster.local
       OTEL_COLLECTOR_PORT_GRPC: '4317'
       OTEL_COLLECTOR_PORT_HTTP: '4318'
       OTEL_SERVICE_NAMESPACE: opentelemetry-demo

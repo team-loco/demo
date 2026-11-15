@@ -14,7 +14,7 @@ services:
       OTEL_SEMCONV_STABILITY_OPT_IN: database
       PRODUCT_CATALOG_PORT: '3550'
       OTEL_TRACES_SAMPLER: always_on
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.observability.svc.cluster.local:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
       OTEL_CONFIG_FILE: /otel-config.yml
     regions:

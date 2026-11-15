@@ -1,7 +1,7 @@
 {
   "accounting": {
     "mode": "source",
-    "port": 8080,
+    "port": null,
     "protocol": "worker",
     "dockerfile": "src/accounting/Dockerfile"
   },
@@ -67,7 +67,7 @@
   },
   "fraud-detection": {
     "mode": "image",
-    "port": 8080,
+    "port": null,
     "protocol": "worker",
     "dockerfile": null
   },
