@@ -14,8 +14,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 192Mi
         replicas:
           min: 1
           max: 1
@@ -36,8 +36,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 384Mi
         replicas:
           min: 1
           max: 1
@@ -57,8 +57,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 192Mi
         replicas:
           min: 1
           max: 1
@@ -84,8 +84,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 64Mi
         replicas:
           min: 1
           max: 1
@@ -105,8 +105,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 64Mi
         replicas:
           min: 1
           max: 1
@@ -125,8 +125,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -145,8 +145,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 384Mi
         replicas:
           min: 1
           max: 1
@@ -177,8 +177,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 1Gi
+        cpu: 50m
+        memory: 256Mi
         replicas:
           min: 1
           max: 1
@@ -227,8 +227,8 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 64Mi
         replicas:
           min: 1
           max: 1
@@ -250,8 +250,8 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -288,8 +288,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -314,8 +314,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -338,8 +338,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 64Mi
         replicas:
           min: 1
           max: 1
@@ -358,8 +358,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -383,8 +383,8 @@ services:
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 128Mi
         replicas:
           min: 1
           max: 1
@@ -402,8 +402,8 @@ services:
       OTEL_TRACES_SAMPLER: always_on
     regions:
       us-east-1:
-        cpu: 100m
-        memory: 512Mi
+        cpu: 50m
+        memory: 64Mi
         replicas:
           min: 1
           max: 1
