@@ -31,7 +31,7 @@ The first `apply` installs cert-manager and Envoy Gateway, then stops because th
 
 Their credentials are in [`config/inputs.yaml`](config/inputs.yaml), the input Secret `locoadm` reads. The API, dashboard and OTLP ingest listen on `api`, `console` and `ingest.loco-demo.localhost` through the control-plane Gateway.
 
-Every `*.localhost` name resolves to `127.0.0.1` on the host, so `locoadm`, `loco` and the browser reach the API, Dex and storage through ports kind and Docker publish on the loopback address; inside the cluster, CoreDNS resolves the same names to the fixtures and to [`config/gateway.yaml`](config/gateway.yaml), so URLs, tokens and presigned storage links work the same from both sides.
+On the host, every `*.localhost` name resolves to `127.0.0.1`, where kind and Docker publish the API, Dex and storage ports. Inside the cluster, CoreDNS resolves the same names to the fixtures and to [`config/gateway.yaml`](config/gateway.yaml).
 
 ## Run locally
 
@@ -73,7 +73,7 @@ The runner creates its own `loco-demo` kind cluster and never uses your current 
 | Area | Check |
 | --- | --- |
 | Installation | `locoadm` installs the control plane, bootstraps the administrator through a Dex password login, attaches the worker, and `status` reports `running`. |
-| Deployments | All 16 services deploy from prebuilt images without a build, and every resource reports healthy. |
+| Deployments | All 16 services deploy and every resource reports healthy. |
 | Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
 | Logs | `QueryLogs` returns the checkout order from both SDK-pushed OTLP logs and container stdout. |
 | Metrics | `QueryMetrics` reports the payment transaction counter increasing after checkout. |
@@ -92,11 +92,11 @@ Evidence and per-step logs go to `artifacts/`; credentials and identifiers stay 
 loco deploy --file loco.yaml --env production --yes --confirm-import
 ```
 
-Every service except product-catalog runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in `loco.yaml`. Each service names its image, so the deploy builds nothing. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
+Every service except product-catalog runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in `loco.yaml`. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
 
 Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Services whose images default to root or to a named user declare numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`.
 
-product-catalog configures its OpenTelemetry SDK only from the file `OTEL_CONFIG_FILE` names, and upstream mounts that file into the container. `loco.yaml` cannot mount files ([team-loco/loco#1843](https://github.com/team-loco/loco/issues/1843)), so [`images/product-catalog`](images/product-catalog/) builds the upstream image with upstream's `otel-config.yml` added at `/otel-config.yml`. The [images workflow](.github/workflows/images.yml) publishes it as `ghcr.io/team-loco/demo/product-catalog`, and `loco.yaml` pins it by digest. The derived image goes away once `loco.yaml` can mount files.
+product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
 
 See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
