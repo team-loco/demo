@@ -908,7 +908,8 @@ Reproduce from https://github.com/team-loco/demo with Docker running:
 ```sh
 mise trust
 mise run setup
-mise run e2e -- --keep
+mise run start
+mise run verify
 ```
 
 Observed failure:

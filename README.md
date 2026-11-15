@@ -44,19 +44,24 @@ git clone https://github.com/team-loco/demo.git
 cd demo
 mise trust
 mise run setup
-mise run e2e
+mise run start     # install Loco and deploy the shop
+mise run verify    # run the checks against the running install
+mise run down      # delete everything start created
 ```
+
+`start` leaves Loco and the shop running. Run `verify` as often as you like while it is up.
 
 | Task | What it does |
 | --- | --- |
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. |
 | `mise run test` | Runs the runner's unit tests. |
 | `mise run validate` | Validates `loco.yaml`, the rendered upstream chart and `loco-install.yaml`. |
+| `mise run start` | Runs `up`, then `deploy`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
 | `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and deploys the 16 services with one `loco deploy`. The pods then pull their images and start. |
 | `mise run verify` | Runs the checks below. |
 | `mise run down` | Deletes the cluster and fixtures this checkout created. |
-| `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
+| `mise run e2e` | Runs `up`, `deploy`, `verify` and `down` in one go, as CI does. |
 | `mise run report` | Files failed checks as issues in `team-loco/loco`. |
 
 The CLIs run on the host with `HOME` set to `.state/home` and `LOCO_CREDENTIAL_STORE=file`, so the session `locoadm login` saves lives in `.state/home/.loco` and never touches your own `~/.loco` or keychain. To use it yourself:
