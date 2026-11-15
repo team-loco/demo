@@ -323,7 +323,7 @@ class HarnessTests(unittest.TestCase):
                 raise value
             return value
         with patch.object(demo.time, "sleep"):
-            demo.wait_for("API health", health)
+            demo.wait_for("API health", health, seconds=30)
 
     def test_failed_install_does_not_clean_up_an_existing_owned_cluster(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "STATE", Path(tmp)), patch.object(demo, "OUT", Path(tmp)), \
