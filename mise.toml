@@ -13,8 +13,6 @@ actionlint = "1.7.12"
 lockfile = true
 [tasks.setup]
 run = ["mise install", "uv sync --locked", "uv run --locked python scripts/demo.py prepare"]
-[tasks.test]
-run = "uv run --locked python -m unittest discover -s tests -v"
 [tasks.validate]
 run = "uv run --locked python scripts/demo.py validate"
 [tasks.e2e]
