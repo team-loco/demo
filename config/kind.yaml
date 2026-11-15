@@ -1,8 +1,15 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
+  # Each kind node reports the Docker VM's whole memory; the 16 services' requests need two.
   - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          taints: []
     extraPortMappings:
       - containerPort: 30080
         hostPort: 80
         listenAddress: 127.0.0.1
+  - role: worker
