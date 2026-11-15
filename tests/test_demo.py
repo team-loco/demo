@@ -25,25 +25,21 @@ spec.loader.exec_module(demo)
 
 
 class DeploymentContractTests(unittest.TestCase):
-    def test_every_app_has_its_own_partial_and_a_pinned_upstream_image(self):
+    def test_every_service_runs_a_pinned_upstream_image(self):
         release = demo.VERSIONS["upstream"]["release"]
-        self.assertEqual(len(demo.APPS), 16)
-        for name in demo.APPS:
+        self.assertEqual(len(demo.SERVICES), 16)
+        for name, service in demo.SERVICES.items():
             with self.subTest(name=name):
-                doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-                self.assertEqual(doc["partial"], name)
-                self.assertEqual(list(doc["services"]), [name])
                 upstream = rf"^ghcr\.io/open-telemetry/demo:{re.escape(release)}-{name}@sha256:[a-f0-9]{{64}}$"
-                image = doc["services"][name]["image"]
+                image = service["image"]
                 if name == "product-catalog":
                     self.assertRegex(image, r"^ghcr\.io/team-loco/demo/product-catalog@sha256:[a-f0-9]{64}$")
                     image = (ROOT / "images/product-catalog/Dockerfile").read_text().splitlines()[0].removeprefix("FROM ")
                 self.assertRegex(image, upstream)
 
     def test_no_app_exports_to_upstream_collector(self):
-        for name in demo.APPS:
-            config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-            env = config["services"][name]["env"]
+        for name, service in demo.SERVICES.items():
+            env = service["env"]
             for value in env.values():
                 self.assertNotIn("http://otel-collector:", value, name)
             self.assertEqual(env["OTEL_TRACES_SAMPLER"], "always_on")
@@ -69,10 +65,8 @@ class DeploymentContractTests(unittest.TestCase):
             self.assertRegex(image, r":[^:@]+@sha256:[a-f0-9]{64}$")
 
     def test_app_requests_leave_cpu_for_the_platform(self):
-        millicores = 0
-        for name in demo.APPS:
-            config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-            millicores += int(config["services"][name]["regions"]["us-east-1"]["cpu"].removesuffix("m"))
+        millicores = sum(int(service["regions"]["us-east-1"]["cpu"].removesuffix("m"))
+                         for service in demo.SERVICES.values())
         self.assertLessEqual(millicores, 2000)
 
 

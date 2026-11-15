@@ -31,7 +31,8 @@ CACHE = ROOT / ".cache"
 OUT = ROOT / "artifacts"
 CONFIG = ROOT / "config"
 VERSIONS = json.loads((ROOT / "versions.json").read_text())
-APPS = sorted(path.parent.name for path in (ROOT / "apps").glob("*/loco.yaml"))
+LOCO_FILE = ROOT / "loco.yaml"
+SERVICES = yaml.safe_load(LOCO_FILE.read_text())["services"]
 LOCO_VERSION = VERSIONS["loco"]
 INSTALLATION = yaml.safe_load((CONFIG / "installation.yaml").read_text())
 CONTROL_PLANE = INSTALLATION["controlPlane"]
@@ -235,14 +236,6 @@ def prepare():
     print(f"Loco {LOCO_VERSION} CLIs match the release checksums; upstream chart prepared", flush=True)
 
 
-def app_file(name):
-    return ROOT / "apps" / name / "loco.yaml"
-
-
-def app_service(name):
-    return yaml.safe_load(app_file(name).read_text())["services"][name]
-
-
 def installation(cluster_uid):
     doc = copy.deepcopy(INSTALLATION)
     doc["release"] = {"version": LOCO_VERSION}
@@ -252,17 +245,16 @@ def installation(cluster_uid):
 
 
 def validate():
-    for name in APPS:
-        result = run([binary("loco"), "infra", "validate", app_file(name)], check=False)
-        if result.returncode:
-            raise RuntimeError(f"{name}: {result.stdout}")
+    result = run([binary("loco"), "infra", "validate", LOCO_FILE], check=False)
+    if result.returncode:
+        raise RuntimeError(result.stdout)
     rendered = run(["helm", "template", "astronomy", CACHE / "charts" / "opentelemetry-demo",
                     "--namespace", "demo-chart-validation", "-f", CONFIG / "demo-infrastructure.yaml"])
     assert_infrastructure_only([d for d in yaml.safe_load_all(rendered) if d])
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
     write_yaml(STATE / "installation-check.yaml", installation(str(uuid.uuid4())))
     run([binary("locoadm"), "validate", "--file", STATE / "installation-check.yaml"])
-    print("Validated all 16 loco.yaml files, the infrastructure-only chart and installation.yaml", flush=True)
+    print("Validated loco.yaml, the infrastructure-only chart and installation.yaml", flush=True)
 
 
 def assert_infrastructure_only(docs):
@@ -489,26 +481,25 @@ def create_workspace():
 def record_resources():
     listed = list_api("loco.resource.v1.ResourceService/ListWorkspaceResources",
                       {"workspaceId": workspace_id(), "pageSize": 200}, "resources")
-    ids = {resource["name"]: resource["id"] for resource in listed if resource["name"] in APPS}
+    ids = {resource["name"]: resource["id"] for resource in listed if resource["name"] in SERVICES}
     (STATE / "resources.json").write_text(json.dumps(ids, indent=2))
 
 
-def deploy_one(name):
-    with step(f"Deploy {name}"):
-        output = loco("deploy", "--file", app_file(name), "--image", app_service(name)["image"],
-                      "--yes", "--confirm-import", "--env", "production", log=OUT / f"deploy-{name}.log")
+def deploy_services():
+    with step("Deploy the 16 services"):
+        output = loco("deploy", "--file", LOCO_FILE, "--yes", "--confirm-import", "--env", "production",
+                      log=OUT / "deploy.log")
     return output[-1500:]
 
 
-def deploy(names=None):
+def deploy():
     create_workspace()
     with step("Install the shop's Kafka, Valkey, PostgreSQL and flagd"):
         run(["helm", "upgrade", "--install", "astronomy", CACHE / "charts/opentelemetry-demo",
              "--namespace", app_namespace(), "--create-namespace", "-f", CONFIG / "demo-infrastructure.yaml",
              "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT, "--wait", "--timeout", "10m"],
             timeout=READY_SECONDS + 120, log=OUT / "helm-astronomy.log", stream=True)
-    for name in names or APPS:
-        record("deploy:" + name, lambda name=name: deploy_one(name))
+    record("deploy", deploy_services)
     record_resources()
     return all(r["status"] == "PASS" for r in RESULTS)
 
@@ -562,7 +553,7 @@ def observability_rpc(method, request, token=None):
 
 
 def check_resource(name, resource_id):
-    configured = app_service(name)
+    configured = SERVICES[name]
     resource = api("loco.resource.v1.ResourceService/GetResource", {"resourceId": resource_id})["resource"]
     reported = resource.get("spec", {}).get("service", {}).get("healthCheck")
     if "health" not in configured and reported:
@@ -591,7 +582,7 @@ def traffic():
     port = 18080
     log = (OUT / "frontend-forward.log").open("w")
     proc = subprocess.Popen(["kubectl", "--kubeconfig", str(STATE / "kubeconfig"), "--context", CONTEXT,
-                             "-n", app_namespace(), "port-forward", "service/frontend", f"{port}:{app_service('frontend')['port']}"],
+                             "-n", app_namespace(), "port-forward", "service/frontend", f"{port}:{SERVICES['frontend']['port']}"],
                             stdout=log, stderr=subprocess.STDOUT)
     def request(path, body=None, trace_id=None):
         request_trace = trace_id or secrets.token_hex(16)
@@ -883,13 +874,10 @@ def down():
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["prepare", "validate", "up", "deploy", "verify", "e2e", "down", "report"])
-    parser.add_argument("services", nargs="*", choices=list(APPS))
     parser.add_argument("--keep", action="store_true")
     args = parser.parse_args()
     STATE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
-    if args.services and args.command != "deploy":
-        parser.error("Service selection is supported by deploy; e2e always tests all 16 apps")
     if args.command == "e2e":
         success = False
         try:
@@ -904,7 +892,7 @@ def main():
                 down()
         return 0 if success else 1
     if args.command == "deploy":
-        return 0 if deploy(args.services or None) else 1
+        return 0 if deploy() else 1
     if args.command == "verify":
         return 0 if verify() else 1
     globals()[args.command]()
