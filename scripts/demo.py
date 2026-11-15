@@ -322,7 +322,7 @@ def start_fixtures():
     with step("Start PostgreSQL, registry, S3 storage and Dex"):
         compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
         discovery = CONTROL_PLANE["auth"]["issuer"] + "/.well-known/openid-configuration"
-        wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200)
+        wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200, 30)
     addresses = fixture_addresses()
     with step("Route fixture and Loco hostnames inside the cluster"):
         kube("apply", "-f", CONFIG / "inputs.yaml", "-f", CONFIG / "gateway.yaml")
@@ -541,7 +541,7 @@ def deploy(names=None):
     return all(r["status"] == "PASS" for r in RESULTS)
 
 
-def wait_for(name, predicate, seconds=READY_SECONDS):
+def wait_for(name, predicate, seconds):
     started = time.monotonic()
     deadline = started + seconds
     next_update = started + PROGRESS_SECONDS
@@ -600,7 +600,7 @@ def check_resource(name, resource_id):
         environments = [e for e in resource.get("environmentStatuses", [])
                         if e["environmentId"] == identity()["environmentId"]]
         return bool(environments) and all(e.get("status") == "RESOURCE_STATUS_HEALTHY" for e in environments)
-    wait_for(name + " health through GetResource", healthy)
+    wait_for(name + " health through GetResource", healthy, READY_SECONDS)
     return "GetResource reports healthy with the configured health semantics"
 
 
