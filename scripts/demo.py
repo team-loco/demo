@@ -873,8 +873,10 @@ def down():
     if not owns_infrastructure():
         print("No infrastructure owned by this checkout; nothing to remove", flush=True)
         return
-    compose("down", "--volumes", "--remove-orphans", check=False, timeout=120)
-    run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], check=False, timeout=120)
+    compose("down", "--volumes", "--remove-orphans", timeout=120)
+    run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], timeout=120)
+    if CLUSTER in run(["kind", "get", "clusters"]).splitlines():
+        raise RuntimeError(f"kind still lists {CLUSTER}; run mise run down again")
     shutil.rmtree(STATE)
 
 

@@ -318,6 +318,16 @@ class HarnessTests(unittest.TestCase):
             compose.assert_not_called()
             self.assertTrue((Path(tmp) / "kubeconfig").exists())
 
+    def test_down_keeps_ownership_until_the_cluster_is_gone(self):
+        for kind in [RuntimeError("kind delete failed"), ["", "loco-demo\n"]]:
+            with self.subTest(kind=kind), tempfile.TemporaryDirectory() as tmp, \
+                 patch.object(demo, "STATE", Path(tmp)), patch.object(demo, "compose"), \
+                 patch.object(demo, "run", side_effect=kind):
+                demo.write_yaml(Path(tmp) / "owner.yaml", {"root": str(demo.ROOT)})
+                with self.assertRaises(RuntimeError):
+                    demo.down()
+                self.assertTrue(demo.owns_infrastructure())
+
     def test_failed_checks_do_not_stop_later_checks(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
