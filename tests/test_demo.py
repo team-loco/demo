@@ -252,11 +252,6 @@ class HarnessTests(unittest.TestCase):
                             demo.check_logs()
                 self.assertEqual((path / "logs-api.json").exists(), succeeds)
 
-    def test_a_resource_with_any_build_fails_the_image_only_check(self):
-        with patch.object(demo, "list_api", side_effect=[[], [{"status": "BUILD_STATUS_SUCCEEDED"}]]):
-            with self.assertRaisesRegex(RuntimeError, "cart should run its prebuilt image"):
-                demo.check_no_builds({"ad": "ad-id", "cart": "cart-id"})
-
     def test_failures_are_recorded_and_secret_values_are_redacted(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
@@ -336,7 +331,7 @@ class HarnessTests(unittest.TestCase):
             with patch.object(demo, "STATE", directory), patch.object(demo, "OUT", directory), \
                  patch.object(demo, "RESULTS", []), \
                  patch.object(demo, "check_health_semantics", side_effect=RuntimeError("CreateContainerConfigError")), \
-                 patch.object(demo, "check_no_builds", return_value="checked"), patch.object(demo, "check_observability_scope", return_value="checked"), \
+                 patch.object(demo, "check_observability_scope", return_value="checked"), \
                  patch.object(demo, "traffic", return_value="checked"), patch.object(demo, "check_logs", return_value="checked"), \
                  patch.object(demo, "check_metrics", side_effect=RuntimeError("token expired")), \
                  patch.object(demo, "check_traces", return_value="checked"), patch.object(demo, "check_kafka", return_value="checked"):

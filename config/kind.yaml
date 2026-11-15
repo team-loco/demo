@@ -1,7 +1,6 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
-  # Each kind node reports the Docker VM's whole memory; the 16 services' requests need two.
   - role: control-plane
     kubeadmConfigPatches:
       - |

@@ -19,7 +19,6 @@ services:
       ROOT_SECRET_KEY: loco-demo-storage
       VGW_REGION: us-east-1
       VGW_PORT: ":19000"
-      # The API addresses buckets by hostname.
       VGW_VIRTUAL_DOMAIN: s3.loco-demo.localhost
     entrypoint: [sh, -c]
     command: ["mkdir -p /data/loco-sources /data/loco-backups && exec versitygw posix /data"]
