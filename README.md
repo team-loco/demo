@@ -50,7 +50,6 @@ mise run e2e
 | Task | What it does |
 | --- | --- |
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. `-- --loco` selects another Loco; see [Run unreleased Loco](#run-unreleased-loco). |
-| `mise run test` | Runs the runner's unit tests. |
 | `mise run validate` | Validates `loco.yaml`, the rendered upstream chart and `loco-install.yaml`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
 | `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and deploys the 16 services with one `loco deploy`. The pods then pull their images and start. |
