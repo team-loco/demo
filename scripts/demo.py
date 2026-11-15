@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import contextlib
 import copy
@@ -33,7 +31,7 @@ CACHE = ROOT / ".cache"
 OUT = ROOT / "artifacts"
 CONFIG = ROOT / "config"
 VERSIONS = json.loads((ROOT / "versions.json").read_text())
-APPS = json.loads((ROOT / "apps.json").read_text())
+APPS = sorted(path.parent.name for path in (ROOT / "apps").glob("*/loco.yaml"))
 LOCO_VERSION = VERSIONS["loco"]
 INSTALLATION = yaml.safe_load((CONFIG / "installation.yaml").read_text())
 CONTROL_PLANE = INSTALLATION["controlPlane"]
@@ -89,15 +87,15 @@ def resources():
     return json.loads((STATE / "resources.json").read_text())
 
 
-def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None):
+def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None):
     args = [str(a) for a in args]
     env = {**os.environ, **(env or {})}
     if log:
         Path(log).parent.mkdir(parents=True, exist_ok=True)
     if stream:
-        result = run_streamed(args, cwd=cwd, timeout=timeout, env=env, log=log)
+        result = run_streamed(args, timeout=timeout, env=env, log=log)
     else:
-        result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
+        result = subprocess.run(args, cwd=ROOT, input=input, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, env=env)
         if log:
             Path(log).write_text(redact(result.stdout))
@@ -107,10 +105,10 @@ def run(args, *, cwd=ROOT, input=None, check=True, timeout=READY_SECONDS, log=No
     return result.stdout if check else result
 
 
-def run_streamed(args, *, cwd, timeout, env, log):
+def run_streamed(args, *, timeout, env, log):
     output = []
     with Path(log).open("w") as logfile, subprocess.Popen(
-            args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            args, cwd=ROOT, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
             start_new_session=True) as process:
         def read_output():
             for line in process.stdout:
@@ -593,7 +591,7 @@ def traffic():
     port = 18080
     log = (OUT / "frontend-forward.log").open("w")
     proc = subprocess.Popen(["kubectl", "--kubeconfig", str(STATE / "kubeconfig"), "--context", CONTEXT,
-                             "-n", app_namespace(), "port-forward", "service/frontend", f"{port}:{APPS['frontend']['port']}"],
+                             "-n", app_namespace(), "port-forward", "service/frontend", f"{port}:{app_service('frontend')['port']}"],
                             stdout=log, stderr=subprocess.STDOUT)
     def request(path, body=None, trace_id=None):
         request_trace = trace_id or secrets.token_hex(16)

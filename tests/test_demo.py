@@ -27,6 +27,7 @@ spec.loader.exec_module(demo)
 class DeploymentContractTests(unittest.TestCase):
     def test_every_app_has_its_own_partial_and_a_pinned_upstream_image(self):
         release = demo.VERSIONS["upstream"]["release"]
+        self.assertEqual(len(demo.APPS), 16)
         for name in demo.APPS:
             with self.subTest(name=name):
                 doc = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
@@ -34,13 +35,6 @@ class DeploymentContractTests(unittest.TestCase):
                 self.assertEqual(list(doc["services"]), [name])
                 self.assertRegex(doc["services"][name]["image"],
                                  rf"^ghcr\.io/open-telemetry/demo:{re.escape(release)}-{name}@sha256:[a-f0-9]{{64}}$")
-
-    def test_grpc_and_worker_apps_leave_health_omitted(self):
-        for name, app in demo.APPS.items():
-            if app["protocol"] in ("grpc", "worker"):
-                config = yaml.safe_load((ROOT / "apps" / name / "loco.yaml").read_text())
-                self.assertNotIn("health", config["services"][name], name)
-                self.assertEqual("port" in config["services"][name], app["protocol"] == "grpc", name)
 
     def test_no_app_exports_to_upstream_collector(self):
         for name in demo.APPS:

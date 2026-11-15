@@ -88,7 +88,7 @@ Evidence and per-step logs go to `artifacts/`; credentials and identifiers stay 
 
 ## Application services
 
-Each service has its own deployment configuration under [`apps/`](apps/). [`apps.json`](apps.json) records its port and protocol.
+Each service has its own deployment configuration under [`apps/`](apps/).
 
 Every service runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in its `loco.yaml` and passed to `loco deploy --image`. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
 
