@@ -246,10 +246,10 @@ def build_binaries(checkout, version):
 def prepare_main():
     """Checks out the newest main commit CI published images for, and returns its release.json and version."""
     checkout = CACHE / "loco"
-    if checkout.exists():
-        run(["git", "-C", checkout, "fetch", "--quiet", "origin", "main"])
-    else:
+    if not checkout.exists():
         run(["git", "clone", "--quiet", "--filter=blob:none", f"https://github.com/{LOCO_REPOSITORY}.git", checkout])
+    # An explicit refspec updates origin/main whatever fetch refspec an existing clone has.
+    run(["git", "-C", checkout, "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"])
     run(["git", "-C", checkout, "checkout", "--quiet", "--detach", "origin/main"])
     manifest = output([sys.executable, "tools/platform-release/release.py", "main", "--repository", LOCO_REPOSITORY],
                       cwd=checkout)
