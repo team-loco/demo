@@ -32,7 +32,7 @@ controlPlane:
     enabled: true
     ingestURL: http://ingest.loco-demo.localhost
   certificates:
-    issuerRef: {name: loco-demo-selfsigned, kind: ClusterIssuer}
+    issuer: {name: loco-demo-selfsigned, selfSigned: {}}
 workers:
   - name: local
     kubernetes: {context: kind-loco-demo, clusterUID: set by the runner, namespace: loco-worker}

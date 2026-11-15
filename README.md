@@ -6,19 +6,17 @@ Astronomy Shop is a microservices application where users browse products, add i
 
 ## Install Loco
 
-An operator installs Loco from one file, [`loco-install.yaml`](loco-install.yaml), which `locoadm` reads from the current directory:
+`mise run up` creates the local cluster and fixtures, then installs Loco from [`loco-install.yaml`](loco-install.yaml) with these operator commands:
 
 ```sh
-locoadm validate
-locoadm apply            # stops until the certificate issuer exists
-kubectl apply -f config/issuer.yaml
-locoadm apply            # installs the control plane
-locoadm login --device   # signs in as demo@example.test
-locoadm cluster attach   # attaches the worker
-locoadm status
+locoadm apply
+locoadm login --device
+locoadm cluster attach
 ```
 
-The first `apply` installs cert-manager and Envoy Gateway, then stops because the ClusterIssuer it names does not exist yet. `controlPlane.admins` lists `demo@example.test`, so its first sign-in becomes a system admin. `login --device` prints a code; the runner approves it through the API's `ApproveDeviceLogin`, the call the dashboard makes, with an ID token from Dex's password grant. `cluster attach` uses that session to enroll the worker cluster. `status` reports `running` once the worker is ready, with no unclaimed admins.
+`apply` installs cert-manager, Envoy Gateway and the control plane. The installation file declares a self-signed ClusterIssuer that the control-plane chart creates; the worker references that issuer on the shared cluster.
+
+`controlPlane.admins` lists `demo@example.test`, so its first sign-in becomes a system admin. `login --device` prints a code; the runner approves it through the API's `ApproveDeviceLogin`, the call the dashboard makes, with an ID token from Dex's password grant. `cluster attach` uses that session to enroll the worker cluster. The runner validates the file before applying and checks `locoadm status` afterward for ready workers and claimed admins.
 
 The runner writes a copy of `loco-install.yaml` with the kind cluster's UID to `.state/` and runs `locoadm` there.
 

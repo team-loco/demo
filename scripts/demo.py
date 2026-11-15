@@ -225,10 +225,10 @@ def loco(*args, log=None, timeout=READY_SECONDS):
     return run([binary("loco"), *args], env=cli_env(), log=log, timeout=timeout, stream=log is not None)
 
 
-def locoadm(*args, log, check=True, timeout=INSTALL_SECONDS):
+def locoadm(*args, log, timeout=INSTALL_SECONDS):
     # locoadm reads loco-install.yaml from its working directory; up writes the cluster's copy to .state.
     return run([binary("locoadm"), *args], env=cli_env(), log=OUT / f"locoadm-{log}.log",
-               check=check, timeout=timeout, stream=True, cwd=STATE)
+               timeout=timeout, stream=True, cwd=STATE)
 
 
 def output(args, cwd):
@@ -426,13 +426,7 @@ def login():
 
 def install_loco():
     locoadm("validate", log="validate")
-    first = locoadm("apply", log="apply-1", check=False)
-    if first.returncode == 0 or "certificate issuer" not in first.stdout:
-        raise RuntimeError("The first apply should stop at the certificate issuer checkpoint:\n" + first.stdout[-3000:])
-    with step("Create the self-signed ClusterIssuer apply asked for"):
-        kube("apply", "-f", CONFIG / "issuer.yaml")
-        kube("wait", "--for=condition=Ready", "clusterissuer/loco-demo-selfsigned", "--timeout=120s")
-    locoadm("apply", log="apply-2")
+    locoadm("apply", log="apply")
     login()
     locoadm("cluster", "attach", log="cluster-attach")
     status = json.loads(locoadm("status", log="status"))
