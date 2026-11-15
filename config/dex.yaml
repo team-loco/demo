@@ -1,6 +1,6 @@
 issuer: http://dex.loco-demo.localhost:15556/dex
 storage: {type: memory}
-web: {http: 0.0.0.0:15556}
+web: {http: 0.0.0.0:15556, allowedOrigins: ["http://console.loco-demo.localhost"]}
 oauth2: {skipApprovalScreen: true}
 enablePasswordDB: true
 staticPasswords:
