@@ -180,6 +180,23 @@ class LocoSourceTests(unittest.TestCase):
                             commands.index(next(c for c in commands if c[0] == "go")))
             self.assertEqual(json.loads(demo.platform_release()), release)
 
+    def test_main_checks_out_origin_main_in_a_clone_that_fetched_only_a_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source, cache = Path(tmp) / "source", Path(tmp) / "cache"
+            git = lambda *args, cwd=source: subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True).stdout
+            source.mkdir()
+            git("init", "--quiet", "--initial-branch=main")
+            git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "--allow-empty", "-m", "old")
+            git("tag", "v1")
+            git("-c", "user.name=t", "-c", "user.email=t@example.test", "commit", "--quiet", "--allow-empty", "-m", "new")
+            head = git("rev-parse", "HEAD").strip()
+            cache.mkdir()
+            git("clone", "--quiet", "--depth=1", "--branch", "v1", source.as_uri(), "loco", cwd=cache)
+            release = {"version": "0.0.0-main.g" + head[:12], "coreCommit": head}
+            with patch.object(demo, "CACHE", cache), patch.object(demo, "output", return_value=json.dumps(release)):
+                demo.prepare_main()
+            self.assertEqual(git("rev-parse", "HEAD", cwd=cache / "loco").strip(), head)
+
     def test_a_source_release_is_named_in_the_installation_file(self):
         self.assertNotIn("release", demo.installation("cluster-uid"))
         self.assertEqual(demo.installation("cluster-uid", True)["release"], {"manifest": "release.json"})
