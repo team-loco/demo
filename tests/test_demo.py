@@ -146,6 +146,60 @@ class ReleaseBinaryTests(unittest.TestCase):
                 demo.download_release_binaries({})
 
 
+class LocoSourceTests(unittest.TestCase):
+    def test_without_setup_the_pinned_release_is_used(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "CACHE", Path(tmp)):
+            self.assertEqual(demo.loco_source(), {"source": "release", "version": demo.VERSIONS["loco"]})
+            self.assertIsNone(demo.platform_release())
+
+    def test_a_checkout_builds_both_clis_at_its_commit(self):
+        commit = "0123456789abcdef" * 2 + "01234567"
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "CACHE", Path(tmp)), \
+             patch.object(demo, "run", return_value=commit + "\n") as run, \
+             patch.object(demo.urllib.request, "urlopen", side_effect=AssertionError("downloads nothing")):
+            (Path(tmp) / "charts/opentelemetry-demo").mkdir(parents=True)
+            demo.prepare(tmp)
+            self.assertEqual(demo.loco_source(), {"source": str(Path(tmp).resolve()), "version": "0.0.0-local.g0123456789ab"})
+            builds = [call.args[0] for call in run.call_args_list if call.args[0][0] == "go"]
+            self.assertEqual([build[-1] for build in builds], ["./loco", "./locoadm"])
+            for build in builds:
+                self.assertIn("-s -w -X main.version=v0.0.0-local.g0123456789ab", build)
+                self.assertEqual(build[build.index("-o") + 1], demo.binary(build[-1].removeprefix("./")))
+
+    def test_main_builds_the_clis_at_the_commit_its_release_names(self):
+        release = {"version": "0.0.0-main.gabcdefabcdef", "coreCommit": "abcdef" * 6 + "abcd"}
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "CACHE", Path(tmp)), \
+             patch.object(demo, "run", return_value="") as run, \
+             patch.object(demo, "output", return_value=json.dumps(release)):
+            (Path(tmp) / "charts/opentelemetry-demo").mkdir(parents=True)
+            demo.prepare("main")
+            commands = [call.args[0] for call in run.call_args_list]
+            checkouts = [command[-1] for command in commands if command[3:5] == ["checkout", "--quiet"]]
+            self.assertEqual(checkouts, ["origin/main", release["coreCommit"]])
+            self.assertLess(commands.index(next(c for c in commands if c[-1] == release["coreCommit"])),
+                            commands.index(next(c for c in commands if c[0] == "go")))
+            self.assertEqual(json.loads(demo.platform_release()), release)
+
+    def test_a_source_release_is_named_in_the_installation_file(self):
+        self.assertNotIn("release", demo.installation("cluster-uid"))
+        self.assertEqual(demo.installation("cluster-uid", True)["release"], {"manifest": "release.json"})
+
+    def test_failures_against_a_local_checkout_are_not_filed(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.object(demo, "CACHE", Path(tmp)), \
+             patch.object(demo, "run") as run, redirect_stdout(io.StringIO()):
+            demo.record_source("/src/loco", "0.0.0-local.g0123456789ab")
+            demo.report()
+        run.assert_not_called()
+
+    def test_platform_repositories_allow_anonymous_pulls_and_pushes_by_the_push_identity(self):
+        config = json.loads((ROOT / "config/registry.json").read_text())
+        repositories = config["http"]["accessControl"]["repositories"]
+        self.assertEqual(repositories["team-loco/**"]["anonymousPolicy"], ["read"])
+        self.assertEqual(repositories["team-loco/**"]["policies"],
+                         [{"users": ["push"], "actions": ["read", "create", "update"]}])
+        self.assertEqual(repositories["**"]["defaultPolicy"], [])
+
+
 class FakeDex(http.server.BaseHTTPRequestHandler):
     submitted = []
 

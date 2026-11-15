@@ -10,6 +10,7 @@ services:
     volumes:
       - ./registry.json:/etc/zot/config.json:ro
       - ./registry.htpasswd:/etc/zot/htpasswd:ro
+    ports: ["127.0.0.1:15000:5000"]
     networks: [kind]
   s3:
     image: versity/versitygw:v1.8.0@sha256:30292fc2eeacc67a36993b01f7a7a5e3361a19cced0e80c1d71cfa2a4b0a2499

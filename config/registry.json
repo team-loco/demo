@@ -5,8 +5,14 @@
     "address": "0.0.0.0",
     "port": "5000",
     "auth": {"htpasswd": {"path": "/etc/zot/htpasswd"}, "failDelay": 1},
+    "compat": ["docker2s2"],
     "accessControl": {
       "repositories": {
+        "team-loco/**": {
+          "anonymousPolicy": ["read"],
+          "policies": [{"users": ["push"], "actions": ["read", "create", "update"]}],
+          "defaultPolicy": ["read"]
+        },
         "**": {
           "policies": [
             {"users": ["push"], "actions": ["read", "create", "update"]},

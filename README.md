@@ -37,7 +37,7 @@ On the host, every `*.localhost` name resolves to `127.0.0.1`, where kind and Do
 
 ## Run locally
 
-Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 15556 and 19000 on `127.0.0.1` must be free. Then run:
+Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 15000, 15556 and 19000 on `127.0.0.1` must be free. Then run:
 
 ```sh
 git clone https://github.com/team-loco/demo.git
@@ -49,7 +49,7 @@ mise run e2e
 
 | Task | What it does |
 | --- | --- |
-| `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. |
+| `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. `-- --loco` selects another Loco; see [Run unreleased Loco](#run-unreleased-loco). |
 | `mise run test` | Runs the runner's unit tests. |
 | `mise run validate` | Validates `loco.yaml`, the rendered upstream chart and `loco-install.yaml`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
@@ -101,6 +101,26 @@ Services reach each other by name, as in `cart:7070`: Loco gives every service a
 product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
 
 See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
+
+## Run unreleased Loco
+
+`mise run setup -- --loco <source>` selects the Loco that later tasks install and use, until the next `setup`. The default source is `release`.
+
+| Source | CLIs | Platform |
+| --- | --- | --- |
+| `release` | The release binaries `versions.json` pins. | The release's platform bundle. |
+| `main` | Built from the newest `main` commit whose images CI published, in `.cache/loco`. | That commit's published charts, CRD bundles and images, from Loco's `release:main` task. |
+| A core checkout's path | Built from the checkout. | Built from the checkout by its `release:local` task during `up`, uncommitted changes included, and pushed to the registry fixture. |
+
+```sh
+mise run setup -- --loco main
+mise run e2e
+
+mise run setup -- --loco ../loco
+mise run e2e
+```
+
+For both, `setup` builds the CLIs with Go, and the runner writes the platform's `release.json` to `.state/` and points `release.manifest` in the copy of `loco-install.yaml` at it. `main` verifies each image's attestation with `gh`, which must be signed in. A checkout builds six images and needs its own `mise` tools installed. The registry fixture listens on `127.0.0.1:15000`, where `locoadm` pulls the charts and CRD bundles as `registry.loco-demo.localhost:15000`, and each node's containerd routes that name to the fixture. `report` names the commit for `main` and files nothing for a checkout.
 
 ## Versions
 

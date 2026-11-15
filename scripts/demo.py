@@ -32,7 +32,6 @@ CONFIG = ROOT / "config"
 VERSIONS = json.loads((ROOT / "versions.json").read_text())
 LOCO_FILE = ROOT / "loco.yaml"
 SERVICES = yaml.safe_load(LOCO_FILE.read_text())["services"]
-LOCO_VERSION = VERSIONS["loco"]
 INSTALL_FILE = "loco-install.yaml"
 INSTALLATION = yaml.safe_load((ROOT / INSTALL_FILE).read_text())
 CONTROL_PLANE = INSTALLATION["controlPlane"]
@@ -43,6 +42,10 @@ CLUSTER = "loco-demo"
 PROJECT = "loco-demo"
 CONTEXT = "kind-" + CLUSTER
 DOMAIN = "loco-demo.localhost"
+LOCO_REPOSITORY = "team-loco/loco"
+# The registry fixture as this machine pushes to it, and the name locoadm and the cluster's nodes pull it by.
+REGISTRY_PUSH = "localhost:15000"
+REGISTRY_ADDRESS = "registry." + DOMAIN + ":15000"
 FIXTURES = ["postgres", "registry", "s3", "dex"]
 DEMO_EMAIL = "demo@example.test"
 DEMO_PASSWORD = "demo-password"
@@ -177,29 +180,35 @@ def compose(*args, **kwargs):
     return run(["docker", "compose", "-p", PROJECT, "-f", CONFIG / "fixtures.yaml", *args], **kwargs)
 
 
+def loco_source():
+    """Returns the Loco setup prepared: its source, release, main or a core checkout's path, and its version."""
+    recorded = CACHE / "loco.json"
+    return json.loads(recorded.read_text()) if recorded.exists() else {"source": "release", "version": VERSIONS["loco"]}
+
+
 def binary(tool):
     arch = {"arm64": "arm64", "aarch64": "arm64", "x86_64": "amd64"}.get(platform.machine().lower())
     if arch is None:
         raise RuntimeError(f"Unsupported architecture: {platform.machine()}")
-    return CACHE / "bin" / LOCO_VERSION / f"{tool}-{platform.system().lower()}-{arch}"
+    return CACHE / "bin" / loco_source()["version"] / f"{tool}-{platform.system().lower()}-{arch}"
 
 
 def release_asset(name):
-    return f"https://github.com/team-loco/loco/releases/download/v{LOCO_VERSION}/{name}"
+    return f"https://github.com/{LOCO_REPOSITORY}/releases/download/v{VERSIONS['loco']}/{name}"
 
 
 def download_release_binaries(checksums):
     for tool in ["loco", "locoadm"]:
         dest = binary(tool)
         if dest.name not in checksums:
-            raise RuntimeError(f"Loco {LOCO_VERSION} publishes no {dest.name}")
+            raise RuntimeError(f"Loco {VERSIONS['loco']} publishes no {dest.name}")
         if not dest.exists():
             dest.parent.mkdir(parents=True, exist_ok=True)
             with urllib.request.urlopen(release_asset(dest.name), timeout=300) as response:
                 dest.write_bytes(response.read())
         if hashlib.sha256(dest.read_bytes()).hexdigest() != checksums[dest.name]:
             dest.unlink()
-            raise RuntimeError(f"{dest.name} does not match the checksum Loco {LOCO_VERSION} publishes")
+            raise RuntimeError(f"{dest.name} does not match the checksum Loco {VERSIONS['loco']} publishes")
         dest.chmod(0o755)
 
 
@@ -222,10 +231,54 @@ def locoadm(*args, log, check=True, timeout=INSTALL_SECONDS):
                check=check, timeout=timeout, stream=True, cwd=STATE)
 
 
-def prepare():
-    with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
-        lines = response.read().decode().splitlines()
-    download_release_binaries({line.split()[-1]: line.split()[0] for line in lines if line.strip()})
+def output(args, cwd):
+    # Build and release tools report progress on stderr; stdout carries only their result.
+    return subprocess.run([str(a) for a in args], cwd=cwd, stdout=subprocess.PIPE, text=True, check=True,
+                          timeout=INSTALL_SECONDS).stdout
+
+
+def build_binaries(checkout, version):
+    for tool in ["loco", "locoadm"]:
+        run(["go", "-C", checkout / "cmd", "build", "-trimpath", "-ldflags", f"-s -w -X main.version=v{version}",
+             "-o", binary(tool), "./" + tool], env={"CGO_ENABLED": "0"}, timeout=INSTALL_SECONDS)
+
+
+def prepare_main():
+    """Checks out the newest main commit CI published images for, and returns its release.json and version."""
+    checkout = CACHE / "loco"
+    if checkout.exists():
+        run(["git", "-C", checkout, "fetch", "--quiet", "origin", "main"])
+    else:
+        run(["git", "clone", "--quiet", "--filter=blob:none", f"https://github.com/{LOCO_REPOSITORY}.git", checkout])
+    run(["git", "-C", checkout, "checkout", "--quiet", "--detach", "origin/main"])
+    manifest = output([sys.executable, "tools/platform-release/release.py", "main", "--repository", LOCO_REPOSITORY],
+                      cwd=checkout)
+    release = json.loads(manifest)
+    run(["git", "-C", checkout, "checkout", "--quiet", "--detach", release["coreCommit"]])
+    return checkout, release["version"], manifest
+
+
+def prepare(source=None):
+    source = source or loco_source()["source"]
+    if source == "release":
+        version = VERSIONS["loco"]
+        record_source(source, version)
+        with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
+            lines = response.read().decode().splitlines()
+        download_release_binaries({line.split()[-1]: line.split()[0] for line in lines if line.strip()})
+    elif source == "main":
+        checkout, version, manifest = prepare_main()
+        release = CACHE / "releases" / f"{version}.json"
+        release.parent.mkdir(parents=True, exist_ok=True)
+        release.write_text(manifest)
+        record_source(source, version)
+        build_binaries(checkout, version)
+    else:
+        checkout = Path(source).resolve()
+        commit = run(["git", "-C", checkout, "rev-parse", "HEAD"]).strip()
+        version = "0.0.0-local.g" + commit[:12]
+        record_source(str(checkout), version)
+        build_binaries(checkout, version)
     chart = CACHE / "charts" / "opentelemetry-demo"
     if not chart.exists():
         archive = CACHE / "charts" / "opentelemetry-demo.tgz"
@@ -236,13 +289,44 @@ def prepare():
             raise RuntimeError("Upstream chart checksum mismatch")
         with tarfile.open(archive) as source:
             source.extractall(archive.parent, filter="data")
-    print(f"Loco {LOCO_VERSION} CLIs match the release checksums; upstream chart prepared", flush=True)
+    print(f"Loco {version} CLIs from {source} prepared; upstream chart prepared", flush=True)
 
 
-def installation(cluster_uid):
+def record_source(source, version):
+    CACHE.mkdir(exist_ok=True)
+    (CACHE / "loco.json").write_text(json.dumps({"source": source, "version": version}) + "\n")
+
+
+def platform_release():
+    """Returns the release.json locoadm installs from, or None when it installs its own release's bundle."""
+    source = loco_source()
+    if source["source"] == "release":
+        return None
+    if source["source"] == "main":
+        return (CACHE / "releases" / f"{source['version']}.json").read_text()
+    with step("Build the core checkout's platform into the registry fixture"):
+        route_registry_to_nodes(fixture_addresses()["registry"])
+        inputs = yaml.safe_load_all((CONFIG / "inputs.yaml").read_text())
+        secret = next(doc for doc in inputs if doc["kind"] == "Secret")["stringData"]
+        return output(["mise", "run", "release:local", "--", "--repository", LOCO_REPOSITORY, "--push", REGISTRY_PUSH,
+                       "--address", REGISTRY_ADDRESS, "--username", secret["push-username"],
+                       "--password", secret["push-password"]], cwd=source["source"])
+
+
+def route_registry_to_nodes(address):
+    """Points each node's containerd at the registry fixture for images named at REGISTRY_ADDRESS."""
+    directory = "/etc/containerd/certs.d/" + REGISTRY_ADDRESS
+    hosts = f'server = "http://{REGISTRY_ADDRESS}"\n[host."http://{address}:5000"]\n  capabilities = ["pull", "resolve"]\n'
+    for node in run(["kind", "get", "nodes", "--name", CLUSTER]).split():
+        run(["docker", "exec", "-i", node, "sh", "-c", f"mkdir -p {directory} && cat > {directory}/hosts.toml"], input=hosts)
+
+
+def installation(cluster_uid, release=False):
     doc = copy.deepcopy(INSTALLATION)
     for target in [doc["controlPlane"], *doc["workers"]]:
         target["kubernetes"]["clusterUID"] = cluster_uid
+    if release:
+        doc["release"] = {"manifest": "release.json"}
     return doc
 
 
@@ -364,7 +448,7 @@ def install_loco():
 
 def up():
     global INFRA_STARTED
-    with step("Verify release binaries and application configuration"):
+    with step("Prepare the Loco CLIs and verify the application configuration"):
         prepare()
         validate()
     if CLUSTER in run(["kind", "get", "clusters"]).splitlines():
@@ -381,7 +465,10 @@ def up():
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
     start_fixtures()
     uid = kube("get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}").strip()
-    write_yaml(STATE / INSTALL_FILE, installation(uid))
+    release = platform_release()
+    if release:
+        (STATE / "release.json").write_text(release)
+    write_yaml(STATE / INSTALL_FILE, installation(uid, release is not None))
     install_loco()
     print(f"Loco is running. Dashboard: {CONTROL_PLANE['webURL']} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
@@ -880,7 +967,8 @@ def diagnostics():
 
 def save_report():
     (OUT / "results.json").write_text(json.dumps(RESULTS, indent=2) + "\n")
-    lines = ["# Loco demo E2E evidence", "", "Loco: " + LOCO_VERSION,
+    source = loco_source()
+    lines = ["# Loco demo E2E evidence", "", f"Loco: {source['version']} ({source['source']})",
              "Astronomy Shop: " + VERSIONS["upstream"]["release"], ""]
     for result in RESULTS:
         lines.extend([f"## {result['status']}: {result['name']}", "", str(result["detail"]), ""])
@@ -888,6 +976,11 @@ def save_report():
 
 
 def report():
+    source = loco_source()
+    if source["source"] not in ("release", "main"):
+        print("Failed checks against a local core checkout are not filed in team-loco/loco", flush=True)
+        return
+    setup = "mise run setup" if source["source"] == "release" else "mise run setup -- --loco main"
     for failure in json.loads((OUT / "results.json").read_text()):
         if failure["status"] != "FAIL":
             continue
@@ -899,7 +992,7 @@ def report():
             print(exact[0]["url"])
             continue
         body = OUT / "issue.md"
-        body.write_text(f"""The Astronomy Shop E2E check `{failure['name']}` fails against Loco `{LOCO_VERSION}`.
+        body.write_text(f"""The Astronomy Shop E2E check `{failure['name']}` fails against Loco `{source['version']}`.
 
 Upstream demo: `{VERSIONS['upstream']['release']}`; chart `{VERSIONS['upstream']['chart']}`.
 
@@ -907,7 +1000,7 @@ Reproduce from https://github.com/team-loco/demo with Docker running:
 
 ```sh
 mise trust
-mise run setup
+{setup}
 mise run e2e -- --keep
 ```
 
@@ -944,7 +1037,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["prepare", "validate", "up", "deploy", "verify", "e2e", "down", "report"])
     parser.add_argument("--keep", action="store_true")
+    parser.add_argument("--loco", help="prepare only: release (default), main, or the path of a core checkout")
     args = parser.parse_args()
+    if args.loco and args.command != "prepare":
+        parser.error("--loco applies only to prepare")
     STATE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
     if args.command == "e2e":
@@ -964,6 +1060,9 @@ def main():
         return 0 if deploy() else 1
     if args.command == "verify":
         return 0 if verify() else 1
+    if args.command == "prepare":
+        prepare(args.loco)
+        return 0
     globals()[args.command]()
     return 0
 
