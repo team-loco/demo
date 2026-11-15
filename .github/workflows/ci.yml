@@ -55,6 +55,3 @@ jobs:
           path: artifacts/
           retention-days: 14
           if-no-files-found: warn
-      - name: Clean up
-        if: always()
-        run: mise run down
