@@ -251,6 +251,8 @@ def prepare_main():
         run(["git", "clone", "--quiet", "--filter=blob:none", f"https://github.com/{LOCO_REPOSITORY}.git", checkout])
     run(["git", "-C", checkout, "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"])
     run(["git", "-C", checkout, "checkout", "--quiet", "--detach", "origin/main"])
+    run(["mise", "trust", checkout / "mise.toml"], cwd=checkout)
+    run(["mise", "install", "--yes"], cwd=checkout, timeout=INSTALL_SECONDS)
     return checkout
 
 

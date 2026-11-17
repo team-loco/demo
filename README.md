@@ -118,7 +118,7 @@ mise run setup -- --loco ../loco
 mise run e2e
 ```
 
-For both, `setup` builds the CLIs with Go. During `up`, `release:local` builds six images and the bundle, and writes its manifest to `.state/release.json`. The checkout needs its own `mise` tools installed. Flux reads the bundle from `registry.loco-demo.localhost:5000`; each node's containerd routes that name to the fixture, which listens on `127.0.0.1:15000` for host pushes. The runner replaces the bundle digest only in `.state/gitops/`. `report` names the commit for `main` and files nothing for a checkout.
+For both, `setup` builds the CLIs with Go. For `main`, it also trusts the cloned repository's `mise.toml` and installs its pinned tools. A supplied checkout needs its own `mise` tools installed. During `up`, `release:local` builds six images and the bundle, and writes its manifest to `.state/release.json`. Flux reads the bundle from `registry.loco-demo.localhost:5000`; each node's containerd routes that name to the fixture, which listens on `127.0.0.1:15000` for host pushes. The runner replaces the bundle digest only in `.state/gitops/`. `report` names the commit for `main` and files nothing for a checkout.
 
 ## Versions
 
