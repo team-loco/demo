@@ -45,8 +45,10 @@ git clone https://github.com/team-loco/demo.git
 cd demo
 mise trust
 mise run setup
-mise run e2e
+mise run e2e -- --keep
 ```
+
+This leaves the demo running. Use `mise run down` when you are finished. To use a local core checkout, replace setup with `mise run setup -- --loco /path/to/core`.
 
 | Task | What it does |
 | --- | --- |
@@ -72,7 +74,7 @@ Open `http://console.loco-demo.localhost` and sign in as `demo@example.test` wit
 To browse Astronomy Shop after deployment, run this from the demo directory and leave it running:
 
 ```sh
-namespace=$(uv run --locked python -c 'import json; print(json.load(open(".state/identity.json"))["namespace"])')
+namespace=$(mise exec -- python -c 'import json; print(json.load(open(".state/identity.json"))["namespace"])')
 mise exec -- kubectl --kubeconfig .state/kubeconfig --context kind-loco-demo \
   --namespace "$namespace" port-forward svc/frontend-proxy 8080:8080
 ```
