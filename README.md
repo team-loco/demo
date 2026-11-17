@@ -11,7 +11,7 @@ Astronomy Shop is a microservices application where users browse products, add i
 `mise run up` runs the local installation flow:
 
 1. Create kind and the external-service fixtures, then install Flux 2.10.0 with `flux install` against `kind-loco-demo`.
-2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` under `.state/` to generate the API environment Secret and OpenBao seal key, then copy them into the working copy of `gitops/`.
+2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` into `.state/gitops/` to generate the API environment Secret and OpenBao seal key, then overlay the tracked `gitops/` files while retaining those Secrets.
 3. Publish that operator repository to the local OCI registry with `flux push artifact`. Bootstrap an `OCIRepository` and root Flux `Kustomization` against `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, config and control-plane layers.
 4. Run `locoadm login --api http://api.loco-demo.localhost --web http://console.loco-demo.localhost --device`.
 5. Run `locoadm cluster create --name local --region us-east-1 --tier production --kube-context kind-loco-demo`. This writes `loco-agent-join-token` directly into `loco-system`.

@@ -418,7 +418,7 @@ def flux(*args, **kwargs):
 def publish_gitops(bundle, entry):
     repo = STATE / "gitops"
     source = repo / "releases/control-plane.yaml"
-    doc = yaml.safe_load(source.read_text())
+    doc = next(yaml.safe_load_all(source.read_text()))
     repository, digest = bundle.removeprefix("oci://").split("@")
     doc["spec"].update(url="oci://" + repository, ref={"digest": digest}, insecure=repository.startswith(REGISTRY_ADDRESS))
     write_yaml(source, doc)
@@ -440,17 +440,11 @@ def publish_gitops(bundle, entry):
     flux("push", "artifact", "oci://" + REGISTRY_PUSH + "/team-loco/demo/config:local", "--path", repo,
          "--source", str(GITOPS), "--revision", loco_source()["version"], "--insecure-registry",
          "--creds", fixture_inputs()["push-username"] + ":" + fixture_inputs()["push-password"])
-    manifests = [
-        {"apiVersion": "source.toolkit.fluxcd.io/v1", "kind": "OCIRepository",
-         "metadata": {"name": "demo-config", "namespace": "flux-system"},
-         "spec": {"interval": "1m", "url": "oci://" + REGISTRY_ADDRESS + "/team-loco/demo/config",
-                  "ref": {"tag": "local"}, "insecure": True}},
-        {"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
-         "metadata": {"name": "demo-config", "namespace": "flux-system"},
-         "spec": {"interval": "1m", "path": "./clusters/local", "prune": True,
-                  "sourceRef": {"kind": "OCIRepository", "name": "demo-config"}}},
-    ]
-    kube("apply", "-f", "-", input=yaml.safe_dump_all(manifests))
+    source = flux("create", "source", "oci", "demo-config", "--url", "oci://" + REGISTRY_ADDRESS + "/team-loco/demo/config",
+                  "--tag", "local", "--insecure", "--export")
+    root = flux("create", "kustomization", "demo-config", "--source", "OCIRepository/demo-config",
+                "--path", "./clusters/local", "--prune", "--export")
+    kube("apply", "-f", "-", input=source + root)
     flux("reconcile", "source", "oci", "demo-config")
     flux("reconcile", "kustomization", "demo-config")
     flux("reconcile", "source", "oci", "platform-bundle")
@@ -470,16 +464,14 @@ def initialize_gitops(bundle):
     env_file = STATE / "api.env"
     env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
     env_file.chmod(0o600)
-    bootstrap = STATE / "bootstrap"
-    locoadm("init", "--single-cluster", "--name", "local", "--output", bootstrap,
+    repo = STATE / "gitops"
+    locoadm("init", "--single-cluster", "--name", "local", "--output", repo,
             "--api", API_URL, "--web", WEB_URL, "--domain", WORKER["global"]["domain"]["apps"][0],
             "--region", REGION, "--admin", DEMO_EMAIL, "--bundle", "oci://" + bundle.removeprefix("oci://"),
             "--api-env-file", env_file, log="init")
-    repo = STATE / "gitops"
-    shutil.copytree(GITOPS, repo)
+    shutil.copytree(GITOPS, repo, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("api-env.yaml", "openbao-seal.yaml"))
     repo.chmod(0o700)
-    for name in ["api-env.yaml", "openbao-seal.yaml"]:
-        shutil.copyfile(bootstrap / "clusters/local/config" / name, repo / "clusters/local/config" / name)
     credentials = []
     for role in ["push", "pull"]:
         auth = base64.b64encode(f"{inputs[role + '-username']}:{inputs[role + '-password']}".encode()).decode()
@@ -489,7 +481,7 @@ def initialize_gitops(bundle):
                                 "registry." + DOMAIN + ":5000": {"auth": auth}}})}})
     path = repo / "clusters/local/config"
     (path / "registry.yaml").write_text(yaml.safe_dump_all(credentials))
-    config = yaml.safe_load((path / "kustomization.yaml").read_text())
+    config = next(yaml.safe_load_all((path / "kustomization.yaml").read_text()))
     config["resources"].append("registry.yaml")
     write_yaml(path / "kustomization.yaml", config)
 
