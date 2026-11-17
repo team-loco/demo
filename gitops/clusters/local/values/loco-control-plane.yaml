@@ -1,0 +1,40 @@
+controlPlaneHostname: api.loco-demo.localhost
+ui:
+  hostname: console.loco-demo.localhost
+api:
+  systemAdmins:
+  - demo@example.test
+  registry:
+    auth: static
+    service: registry.loco-demo.localhost:5000
+  env:
+    WEB_URL: http://console.loco-demo.localhost
+    CORS_ALLOWED_ORIGINS: http://console.loco-demo.localhost
+    AUTH_ISSUERS: '[{"name":"local","issuer":"http://dex.loco-demo.localhost:15556/dex","audience":"loco","web":{"clientId":"loco","scopes":"openid
+      profile email"}}]'
+    AUTH_SIGNUP_MODE: closed
+    LOCO_SOURCE_BUCKET_ENDPOINT: http://s3.loco-demo.localhost:19000
+    LOCO_SOURCE_BUCKET: loco-sources
+    LOCO_SOURCE_BUCKET_REGION: us-east-1
+    LOCO_REGISTRY_HOST: registry.loco-demo.localhost:5000
+    LOCO_REGISTRY_URL: http://registry.loco-demo.localhost:5000
+certManager:
+  enabled: false
+  issuer:
+    create: true
+    type: selfSigned
+    name: loco-demo-selfsigned
+    kind: ClusterIssuer
+    email: demo@example.test
+obsProxy:
+  ingest:
+    hostname: ingest.loco-demo.localhost
+openbao:
+  snapshots:
+    enabled: true
+    s3:
+      endpoint: http://s3.loco-demo.localhost:19000
+      region: us-east-1
+      bucket: loco-backups
+      existingSecret:
+        name: loco-inputs

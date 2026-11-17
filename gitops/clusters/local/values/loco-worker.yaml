@@ -1,0 +1,27 @@
+global:
+  region: us-east-1
+  domain:
+    apps:
+    - apps.loco-demo.localhost
+  exporter:
+    endpoint: http://ingest.loco-demo.localhost
+env:
+  CONTROL_PLANE_URL: http://api.loco-demo.localhost
+  LOCO_REGISTRY_HOST: registry.loco-demo.localhost:5000
+certManager:
+  issuer:
+    create: false
+    name: loco-demo-selfsigned
+    kind: ClusterIssuer
+    email: demo@example.test
+metrics-server:
+  enabled: true
+  args:
+  - --kubelet-insecure-tls
+builds:
+  privateEgress: []
+  pushSecretName: loco-registry-push
+  insecureRegistry: true
+registry:
+  auth: static
+  pullSecretName: loco-registry-pull
