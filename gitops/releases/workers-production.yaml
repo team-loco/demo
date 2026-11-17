@@ -1,0 +1,14 @@
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: platform-bundle
+  namespace: flux-system
+spec:
+  interval: 5m
+  layerSelector:
+    mediaType: application/vnd.oci.image.layer.v1.tar+gzip
+    operation: copy
+  ref:
+    digest: sha256:1d1dda6026e7c232154001a8ebed6be7b9f01ea82274b7e1337414f4afb51be8
+  url: oci://ghcr.io/team-loco/loco/platform
+---
