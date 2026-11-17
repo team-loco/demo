@@ -1,6 +1,6 @@
 import argparse
+import base64
 import contextlib
-import copy
 import datetime as dt
 import hashlib
 import json
@@ -32,20 +32,22 @@ CONFIG = ROOT / "config"
 VERSIONS = json.loads((ROOT / "versions.json").read_text())
 LOCO_FILE = ROOT / "loco.yaml"
 SERVICES = yaml.safe_load(LOCO_FILE.read_text())["services"]
-INSTALL_FILE = "loco-install.yaml"
-INSTALLATION = yaml.safe_load((ROOT / INSTALL_FILE).read_text())
-CONTROL_PLANE = INSTALLATION["controlPlane"]
-WORKER = INSTALLATION["workers"][0]
-API_URL = CONTROL_PLANE["apiURL"]
-REGION = WORKER["region"]
+GITOPS = ROOT / "gitops"
+VALUES = GITOPS / "clusters/local/values"
+CONTROL_PLANE = yaml.safe_load((VALUES / "loco-control-plane.yaml").read_text())
+WORKER = yaml.safe_load((VALUES / "loco-worker.yaml").read_text())
+API_URL = WORKER["env"]["CONTROL_PLANE_URL"]
+WEB_URL = CONTROL_PLANE["api"]["env"]["WEB_URL"]
+AUTH = json.loads(CONTROL_PLANE["api"]["env"]["AUTH_ISSUERS"])[0]
+REGION = WORKER["global"]["region"]
 CLUSTER = "loco-demo"
 PROJECT = "loco-demo"
 CONTEXT = "kind-" + CLUSTER
 DOMAIN = "loco-demo.localhost"
 LOCO_REPOSITORY = "team-loco/loco"
-# The registry fixture as this machine pushes to it, and the name locoadm and the cluster's nodes pull it by.
+# The registry addresses for host pushes and in-cluster pulls.
 REGISTRY_PUSH = "localhost:15000"
-REGISTRY_ADDRESS = "registry." + DOMAIN + ":15000"
+REGISTRY_ADDRESS = "registry." + DOMAIN + ":5000"
 FIXTURES = ["postgres", "registry", "s3", "dex"]
 DEMO_EMAIL = "demo@example.test"
 DEMO_PASSWORD = "demo-password"
@@ -225,10 +227,9 @@ def loco(*args, log=None, timeout=READY_SECONDS):
     return run([binary("loco"), *args], env=cli_env(), log=log, timeout=timeout, stream=log is not None)
 
 
-def locoadm(*args, log, check=True, timeout=INSTALL_SECONDS):
-    # locoadm reads loco-install.yaml from its working directory; up writes the cluster's copy to .state.
+def locoadm(*args, log, timeout=INSTALL_SECONDS):
     return run([binary("locoadm"), *args], env=cli_env(), log=OUT / f"locoadm-{log}.log",
-               check=check, timeout=timeout, stream=True, cwd=STATE)
+               timeout=timeout, stream=True, cwd=STATE)
 
 
 def output(args, cwd):
@@ -244,18 +245,15 @@ def build_binaries(checkout, version):
 
 
 def prepare_main():
-    """Checks out the newest main commit CI published images for, and returns its release.json and version."""
+    """Checks out origin/main for a local bundle build."""
     checkout = CACHE / "loco"
     if not checkout.exists():
         run(["git", "clone", "--quiet", "--filter=blob:none", f"https://github.com/{LOCO_REPOSITORY}.git", checkout])
-    # An explicit refspec updates origin/main whatever fetch refspec an existing clone has.
     run(["git", "-C", checkout, "fetch", "--quiet", "origin", "+refs/heads/main:refs/remotes/origin/main"])
     run(["git", "-C", checkout, "checkout", "--quiet", "--detach", "origin/main"])
-    manifest = output([sys.executable, "tools/platform-release/release.py", "main", "--repository", LOCO_REPOSITORY],
-                      cwd=checkout)
-    release = json.loads(manifest)
-    run(["git", "-C", checkout, "checkout", "--quiet", "--detach", release["coreCommit"]])
-    return checkout, release["version"], manifest
+    run(["mise", "trust", checkout / "mise.toml"], cwd=checkout)
+    run(["mise", "install", "--yes"], cwd=checkout, timeout=INSTALL_SECONDS)
+    return checkout
 
 
 def prepare(source=None):
@@ -266,18 +264,11 @@ def prepare(source=None):
         with urllib.request.urlopen(release_asset("checksums.txt"), timeout=60) as response:
             lines = response.read().decode().splitlines()
         download_release_binaries({line.split()[-1]: line.split()[0] for line in lines if line.strip()})
-    elif source == "main":
-        checkout, version, manifest = prepare_main()
-        release = CACHE / "releases" / f"{version}.json"
-        release.parent.mkdir(parents=True, exist_ok=True)
-        release.write_text(manifest)
-        record_source(source, version)
-        build_binaries(checkout, version)
     else:
-        checkout = Path(source).resolve()
+        checkout = prepare_main() if source == "main" else Path(source).resolve()
         commit = run(["git", "-C", checkout, "rev-parse", "HEAD"]).strip()
         version = "0.0.0-local.g" + commit[:12]
-        record_source(str(checkout), version)
+        record_source(source if source == "main" else str(checkout), version)
         build_binaries(checkout, version)
     chart = CACHE / "charts" / "opentelemetry-demo"
     if not chart.exists():
@@ -287,8 +278,8 @@ def prepare(source=None):
             archive.write_bytes(response.read())
         if hashlib.sha256(archive.read_bytes()).hexdigest() != VERSIONS["upstream"]["chartSha256"]:
             raise RuntimeError("Upstream chart checksum mismatch")
-        with tarfile.open(archive) as source:
-            source.extractall(archive.parent, filter="data")
+        with tarfile.open(archive) as chart_archive:
+            chart_archive.extractall(archive.parent, filter="data")
     print(f"Loco {version} CLIs from {source} prepared; upstream chart prepared", flush=True)
 
 
@@ -297,20 +288,26 @@ def record_source(source, version):
     (CACHE / "loco.json").write_text(json.dumps({"source": source, "version": version}) + "\n")
 
 
-def platform_release():
-    """Returns the release.json locoadm installs from, or None when it installs its own release's bundle."""
+def platform_bundle():
     source = loco_source()
     if source["source"] == "release":
-        return None
-    if source["source"] == "main":
-        return (CACHE / "releases" / f"{source['version']}.json").read_text()
+        repository = "ghcr.io/team-loco/loco/platform"
+        digest = run(["crane", "digest", f"{repository}:{source['version']}"]).strip()
+        return repository + "@" + digest
+    checkout = CACHE / "loco" if source["source"] == "main" else Path(source["source"])
     with step("Build the core checkout's platform into the registry fixture"):
         route_registry_to_nodes(fixture_addresses()["registry"])
-        inputs = yaml.safe_load_all((CONFIG / "inputs.yaml").read_text())
-        secret = next(doc for doc in inputs if doc["kind"] == "Secret")["stringData"]
-        return output(["mise", "run", "release:local", "--", "--repository", LOCO_REPOSITORY, "--push", REGISTRY_PUSH,
-                       "--address", REGISTRY_ADDRESS, "--username", secret["push-username"],
-                       "--password", secret["push-password"]], cwd=source["source"])
+        secret = fixture_inputs()
+        manifest = output(["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
+                           "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
+                           "--username", secret["push-username"], "--password", secret["push-password"]], cwd=checkout)
+        (STATE / "release.json").write_text(manifest)
+        return json.loads(manifest)["bundle"]
+
+
+def fixture_inputs():
+    return next(doc for doc in yaml.safe_load_all((CONFIG / "inputs.yaml").read_text())
+                if doc["kind"] == "Secret")["stringData"]
 
 
 def route_registry_to_nodes(address):
@@ -321,15 +318,6 @@ def route_registry_to_nodes(address):
         run(["docker", "exec", "-i", node, "sh", "-c", f"mkdir -p {directory} && cat > {directory}/hosts.toml"], input=hosts)
 
 
-def installation(cluster_uid, release=False):
-    doc = copy.deepcopy(INSTALLATION)
-    for target in [doc["controlPlane"], *doc["workers"]]:
-        target["kubernetes"]["clusterUID"] = cluster_uid
-    if release:
-        doc["release"] = {"manifest": "release.json"}
-    return doc
-
-
 def validate():
     result = run([binary("loco"), "infra", "validate", LOCO_FILE], check=False)
     if result.returncode:
@@ -338,8 +326,10 @@ def validate():
                     "--namespace", "demo-chart-validation", "-f", CONFIG / "demo-infrastructure.yaml"])
     assert_infrastructure_only([d for d in yaml.safe_load_all(rendered) if d])
     (OUT / "demo-infrastructure.yaml").write_text(rendered)
-    run([binary("locoadm"), "validate"])
-    print(f"Validated loco.yaml, the infrastructure-only chart and {INSTALL_FILE}", flush=True)
+    rendered = run(["kubectl", "kustomize", GITOPS / "clusters/local", "--load-restrictor=LoadRestrictionsNone"])
+    (OUT / "gitops.yaml").write_text(rendered)
+    run(["kubectl", "kustomize", GITOPS / "clusters/local/config"])
+    print("Validated loco.yaml, the infrastructure-only chart and gitops/clusters/local", flush=True)
 
 
 def assert_infrastructure_only(docs):
@@ -356,11 +346,10 @@ def fixture_addresses():
 
 def cluster_hosts(addresses, gateway):
     hosts = {addresses[name]: [f"{name}.{DOMAIN}"] for name in FIXTURES}
-    storage = urllib.parse.urlsplit(CONTROL_PLANE["sourceBucket"]["endpoint"]).hostname
-    for bucket in [CONTROL_PLANE["sourceBucket"]["bucket"], CONTROL_PLANE["openbao"]["snapshots"]["bucket"]]:
+    storage = urllib.parse.urlsplit(CONTROL_PLANE["api"]["env"]["LOCO_SOURCE_BUCKET_ENDPOINT"]).hostname
+    for bucket in [CONTROL_PLANE["api"]["env"]["LOCO_SOURCE_BUCKET"], CONTROL_PLANE["openbao"]["snapshots"]["s3"]["bucket"]]:
         hosts[addresses["s3"]].append(f"{bucket}.{storage}")
-    hosts[gateway] = [urllib.parse.urlsplit(CONTROL_PLANE[key]).hostname for key in ["apiURL", "webURL"]]
-    hosts[gateway].append(urllib.parse.urlsplit(CONTROL_PLANE["observability"]["ingestURL"]).hostname)
+    hosts[gateway] = [urllib.parse.urlsplit(url).hostname for url in [API_URL, WEB_URL, WORKER["global"]["exporter"]["endpoint"]]]
     return hosts
 
 
@@ -377,7 +366,7 @@ def configure_cluster_dns(hosts):
 def start_fixtures():
     with step("Start PostgreSQL, registry, S3 storage and Dex"):
         compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
-        discovery = CONTROL_PLANE["auth"]["issuer"] + "/.well-known/openid-configuration"
+        discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
         wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200, 30)
     addresses = fixture_addresses()
     with step("Route fixture and Loco hostnames inside the cluster"):
@@ -390,9 +379,9 @@ DEVICE_CODE = re.compile(r"^Open \S+ and enter the code (\S+)$")
 
 
 def dex_id_token():
-    form = {"grant_type": "password", "client_id": CONTROL_PLANE["auth"]["clientId"], "username": DEMO_EMAIL,
+    form = {"grant_type": "password", "client_id": AUTH["audience"], "username": DEMO_EMAIL,
             "password": DEMO_PASSWORD, "scope": "openid email profile"}
-    request = urllib.request.Request(CONTROL_PLANE["auth"]["issuer"] + "/token",
+    request = urllib.request.Request(AUTH["issuer"] + "/token",
                                      data=urllib.parse.urlencode(form).encode())
     with urllib.request.urlopen(request, timeout=30) as response:
         return json.load(response)["id_token"]
@@ -401,7 +390,7 @@ def dex_id_token():
 def login():
     """Runs locoadm login --device and approves its code as the dashboard does, with a Dex ID token."""
     with step("locoadm login"):
-        process = subprocess.Popen([str(binary("locoadm")), "login", "--device"], cwd=STATE,
+        process = subprocess.Popen([str(binary("locoadm")), "login", "--api", API_URL, "--web", WEB_URL, "--device"], cwd=STATE,
                                    env={**os.environ, **cli_env()}, stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True)
         deadline = threading.Timer(READY_SECONDS, process.kill)
@@ -424,24 +413,101 @@ def login():
             raise RuntimeError("locoadm login failed:\n" + redact("".join(output)[-3000:]))
 
 
+def flux(*args, **kwargs):
+    return run(["flux", "--kubeconfig", STATE / "kubeconfig", "--context", CONTEXT, *args], **kwargs)
+
+
+def publish_gitops(bundle, entry):
+    repo = STATE / "gitops"
+    source = repo / "releases/control-plane.yaml"
+    doc = next(yaml.safe_load_all(source.read_text()))
+    repository, digest = bundle.removeprefix("oci://").split("@")
+    doc["spec"].update(url="oci://" + repository, ref={"digest": digest}, insecure=repository.startswith(REGISTRY_ADDRESS))
+    write_yaml(source, doc)
+    path = repo / "bases/all/loco.yaml"
+    docs = list(yaml.safe_load_all(path.read_text()))
+    for doc in docs:
+        if not doc:
+            continue
+        if doc["metadata"]["name"] == "loco":
+            doc["spec"]["path"] = entry
+            if repository.startswith(REGISTRY_ADDRESS):
+                source_patch = [{"target": {"kind": "OCIRepository"}, "patch": json.dumps([
+                    {"op": "add", "path": "/spec/insecure", "value": True}])}]
+                doc["spec"]["patches"] = [{"target": {"kind": "Kustomization"}, "patch": json.dumps([
+                    {"op": "add", "path": "/spec/patches", "value": source_patch}])}]
+        else:
+            doc["spec"]["sourceRef"] = {"kind": "OCIRepository", "name": "demo-config"}
+    path.write_text(yaml.safe_dump_all([doc for doc in docs if doc], sort_keys=False))
+    flux("push", "artifact", "oci://" + REGISTRY_PUSH + "/team-loco/demo/config:local", "--path", repo,
+         "--source", str(GITOPS), "--revision", loco_source()["version"], "--insecure-registry",
+         "--creds", fixture_inputs()["push-username"] + ":" + fixture_inputs()["push-password"])
+    source = flux("create", "source", "oci", "demo-config", "--url", "oci://" + REGISTRY_ADDRESS + "/team-loco/demo/config",
+                  "--tag", "local", "--insecure", "--export")
+    root = flux("create", "kustomization", "demo-config", "--source", "OCIRepository/demo-config",
+                "--path", "./clusters/local", "--prune", "--export")
+    kube("apply", "-f", "-", input=source + root)
+    flux("reconcile", "source", "oci", "demo-config")
+    flux("reconcile", "kustomization", "demo-config")
+    flux("reconcile", "source", "oci", "platform-bundle")
+    layers = ["loco", "loco-namespaces", "loco-crds", "loco-infra", "loco-cluster-config", "loco-control-plane"]
+    if entry == "./all":
+        layers.append("loco-worker")
+    for layer in layers:
+        flux("reconcile", "kustomization", layer, "--timeout=10m", timeout=READY_SECONDS + 60,
+             log=OUT / ("flux-" + layer + ".log"), stream=True)
+
+
+def initialize_gitops(bundle):
+    inputs = fixture_inputs()
+    env = {"DATABASE_URL": inputs["database-url"], "LOCO_SOURCE_BUCKET_ACCESS_KEY_ID": inputs["access-key-id"],
+           "LOCO_SOURCE_BUCKET_SECRET_ACCESS_KEY": inputs["secret-access-key"],
+           "LOCO_REGISTRY_USERNAME": inputs["api-username"], "LOCO_REGISTRY_PASSWORD": inputs["api-password"]}
+    env_file = STATE / "api.env"
+    env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
+    env_file.chmod(0o600)
+    repo = STATE / "gitops"
+    locoadm("init", "--single-cluster", "--name", "local", "--output", repo,
+            "--api", API_URL, "--web", WEB_URL, "--domain", WORKER["global"]["domain"]["apps"][0],
+            "--region", REGION, "--admin", DEMO_EMAIL, "--bundle", "oci://" + bundle.removeprefix("oci://"),
+            "--api-env-file", env_file, log="init")
+    shutil.copytree(GITOPS, repo, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns("api-env.yaml", "openbao-seal.yaml"))
+    repo.chmod(0o700)
+    credentials = []
+    for role in ["push", "pull"]:
+        auth = base64.b64encode(f"{inputs[role + '-username']}:{inputs[role + '-password']}".encode()).decode()
+        credentials.append({"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/dockerconfigjson",
+                            "metadata": {"name": "loco-registry-" + role, "namespace": "loco-system"},
+                            "stringData": {".dockerconfigjson": json.dumps({"auths": {
+                                "registry." + DOMAIN + ":5000": {"auth": auth}}})}})
+    path = repo / "clusters/local/config"
+    (path / "registry.yaml").write_text(yaml.safe_dump_all(credentials))
+    config = next(yaml.safe_load_all((path / "kustomization.yaml").read_text()))
+    config["resources"].append("registry.yaml")
+    write_yaml(path / "kustomization.yaml", config)
+
+
 def install_loco():
-    locoadm("validate", log="validate")
-    first = locoadm("apply", log="apply-1", check=False)
-    if first.returncode == 0 or "certificate issuer" not in first.stdout:
-        raise RuntimeError("The first apply should stop at the certificate issuer checkpoint:\n" + first.stdout[-3000:])
-    with step("Create the self-signed ClusterIssuer apply asked for"):
-        kube("apply", "-f", CONFIG / "issuer.yaml")
-        kube("wait", "--for=condition=Ready", "clusterissuer/loco-demo-selfsigned", "--timeout=120s")
-    locoadm("apply", log="apply-2")
+    with step("Bootstrap Flux and reconcile the control plane"):
+        flux("install", log=OUT / "flux-install.log", stream=True)
+        bundle = platform_bundle()
+        initialize_gitops(bundle)
+        publish_gitops(bundle, "./control-plane")
+    wait_for("API health", lambda: urllib.request.urlopen(API_URL + "/health", timeout=5).status == 200, READY_SECONDS)
     login()
-    locoadm("cluster", "attach", log="cluster-attach")
-    status = json.loads(locoadm("status", log="status"))
-    (OUT / "installation-status.json").write_text(json.dumps(status, indent=2) + "\n")
-    if status["phase"] != "running" or not all(worker["ready"] for worker in status["workers"]):
-        raise RuntimeError("locoadm status does not report a running installation: " + json.dumps(status))
-    if not status["admins"]["checked"] or status["admins"]["unclaimed"]:
-        raise RuntimeError("locoadm status reports unclaimed admins: " + json.dumps(status["admins"]))
-    with urllib.request.urlopen(CONTROL_PLANE["webURL"], timeout=30) as response:
+    locoadm("cluster", "create", "--name", "local", "--region", REGION, "--tier", "production",
+            "--kube-context", CONTEXT, log="cluster-create")
+    with step("Reconcile the worker"):
+        publish_gitops(bundle, "./all")
+    def enrolled():
+        status = json.loads(locoadm("status", log="status"))
+        (OUT / "installation-status.json").write_text(json.dumps(status, indent=2) + "\n")
+        return not status.get("unclaimedAdmins") and any(
+            item["cluster"]["name"] == "local" and item["enrollment"] == "enrolled"
+            and item["cluster"].get("lastHeartbeat") for item in status["clusters"])
+    wait_for("worker enrollment and heartbeat with no unclaimed admins", enrolled, READY_SECONDS)
+    with urllib.request.urlopen(WEB_URL, timeout=30) as response:
         if "<html" not in response.read().decode().lower():
             raise RuntimeError("The dashboard did not serve its page")
 
@@ -464,13 +530,8 @@ def up():
              "--config", CONFIG / "kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
     start_fixtures()
-    uid = kube("get", "namespace", "kube-system", "-o", "jsonpath={.metadata.uid}").strip()
-    release = platform_release()
-    if release:
-        (STATE / "release.json").write_text(release)
-    write_yaml(STATE / INSTALL_FILE, installation(uid, release is not None))
     install_loco()
-    print(f"Loco is running. Dashboard: {CONTROL_PLANE['webURL']} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
+    print(f"Loco is running. Dashboard: {WEB_URL} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
 
 def rpc(procedure, data, token=None):
@@ -948,11 +1009,12 @@ def diagnostics():
         for args, name in [
             (["get", "pods", "-A", "-o", "wide"], "pods"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),
+            (["get", "kustomizations.kustomize.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io", "-A"], "flux"),
             (["get", "applications", "-A", "-o", "yaml"], "applications"),
         ]:
             with contextlib.suppress(Exception):
                 kube(*args, check=False, timeout=30, log=OUT / (name + ".log"))
-        namespaces = [CONTROL_PLANE["kubernetes"]["namespace"], WORKER["kubernetes"]["namespace"]]
+        namespaces = ["loco-system", "flux-system", "cert-manager"]
         if (STATE / "identity.json").exists():
             namespaces.append(app_namespace())
         for ns in namespaces:
@@ -1010,11 +1072,12 @@ Observed failure:
 {redact(str(failure['detail']))}
 ```
 
-Expected: locoadm installs Loco, all 16 apps deploy through Loco, checkout succeeds, and its trace, metrics and logs are queryable through the API.
+Expected: Flux installs Loco, all 16 apps deploy through Loco, checkout succeeds, and its trace, metrics and logs are queryable through the API.
 
 Local evidence is in `artifacts/evidence.md` and the per-step logs. CI retains these artifacts. This report identifies the failing check; its cause may be a harness defect and needs triage before changing Loco.
 """)
-        print(run(["gh", "issue", "create", "-R", "team-loco/loco", "--title", marker, "--body-file", body]))
+        print(run(["gh", "issue", "create", "-R", "team-loco/loco", "--title", marker, "--body-file", body,
+                   "--label", "tooling", "--label", "bug"]))
 
 
 def owns_infrastructure():
