@@ -93,7 +93,7 @@ def discover_app_namespace():
     data = identity()
     namespaces = json.loads(kube("get", "namespaces", "-l", f"loco.io/workspace-id={data['workspaceId']}", "-o", "json"))
     names = [ns["metadata"]["name"] for ns in namespaces["items"]
-             if ns["metadata"]["labels"].get("loco.io/environment-id", data["environmentId"]) == data["environmentId"]]
+             if ns["metadata"]["labels"].get("loco.io/environment-id") == data["environmentId"]]
     if not names:
         return False
     if len(names) != 1:
@@ -1139,8 +1139,7 @@ def main():
     if args.command == "e2e":
         success = False
         try:
-            if record("install", up):
-                deploy()
+            if record("install", up) and deploy():
                 verify()
             success = all(r["status"] == "PASS" for r in RESULTS)
         finally:

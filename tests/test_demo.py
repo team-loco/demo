@@ -20,17 +20,17 @@ class InstallationTests(unittest.TestCase):
         self.addCleanup(self.patch.stop)
 
     def test_namespace_discovery_supports_release_and_environment_isolation(self):
-        for labels in [{}, {"loco.io/environment-id": "production"}]:
-            with self.subTest(labels=labels):
+        for name in ["loco-ws-shop", "loco-ws-production"]:
+            with self.subTest(namespace=name):
                 data = {"workspaceId": "shop", "environmentId": "production"}
                 (self.state / "identity.json").write_text(json.dumps(data))
                 namespaces = {"items": [
-                    {"metadata": {"name": "actual-workload-namespace", "labels": labels}},
+                    {"metadata": {"name": name, "labels": {"loco.io/environment-id": "production"}}},
                     {"metadata": {"name": "staging", "labels": {"loco.io/environment-id": "staging"}}},
                 ]}
                 with patch.object(demo, "kube", return_value=json.dumps(namespaces)):
                     self.assertTrue(demo.discover_app_namespace())
-                self.assertEqual(demo.app_namespace(), "actual-workload-namespace")
+                self.assertEqual(demo.app_namespace(), name)
 
     def test_namespace_discovery_waits_for_controller(self):
         (self.state / "identity.json").write_text(json.dumps({"workspaceId": "shop", "environmentId": "production"}))
@@ -44,6 +44,15 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse(demo.deploy())
         resources.assert_not_called()
         run.assert_not_called()
+
+    def test_e2e_failed_deploy_skips_verification(self):
+        with patch.object(sys, "argv", ["demo.py", "e2e", "--keep"]), \
+                patch.object(demo, "OUT", self.state), patch.object(demo, "record", return_value=True), \
+                patch.object(demo, "RESULTS", [{"status": "FAIL"}]), \
+                patch.object(demo, "deploy", return_value=False), patch.object(demo, "verify") as verify, \
+                patch.object(demo, "diagnostics"), patch.object(demo, "save_report"):
+            self.assertEqual(demo.main(), 1)
+        verify.assert_not_called()
 
     def test_new_cluster_clears_old_installation_state(self):
         (self.state / "identity.json").write_text('{"workspaceId": "deleted-workspace"}')
