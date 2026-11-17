@@ -1,8 +1,0 @@
-apiVersion: v1
-kind: Secret
-metadata:
-  name: openbao-seal
-  namespace: loco-system
-stringData:
-  key: REPLACED_BY_DEMO_RUNNER
-type: Opaque
