@@ -14,8 +14,10 @@ Astronomy Shop is a microservices application where users browse products, add i
 2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` into `.state/gitops/` to generate the API environment Secret and OpenBao seal key, then overlay the tracked `gitops/` files while retaining those Secrets.
 3. Publish that operator repository to the local OCI registry with `flux push artifact`. Bootstrap an `OCIRepository` and root Flux `Kustomization` against `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, config and control-plane layers.
 4. Run `locoadm login --api http://api.loco-demo.localhost --web http://console.loco-demo.localhost --device`.
-5. Run `locoadm cluster create --name local --region us-east-1 --tier production --kube-context kind-loco-demo`. This writes `loco-agent-join-token` directly into `loco-system`.
-6. Publish the repository with the `./all` entry point, reconcile the worker, and wait for `locoadm status` to report enrollment and a heartbeat with no unclaimed admins.
+5. Run `locoadm cluster create --name local --region us-east-1 --kube-context kind-loco-demo`, adding `--tier production` when the selected CLI supports tiers. This writes `loco-agent-join-token` directly into `loco-system`.
+6. Publish the repository with the `./all` entry point, reconcile the worker, and wait for `locoadm status` to report enrollment, a healthy heartbeat and no unclaimed admins.
+
+The runner sets `LOCO_TARGET_PLATFORM` in the generated control-plane values to match the kind nodes (`linux/arm64` on Apple Silicon, `linux/amd64` on x86). The tracked values remain portable between hosts.
 
 The control-plane chart creates the shared self-signed ClusterIssuer; the worker references it. `api.systemAdmins` lists `demo@example.test`, so its first sign-in becomes a system admin. The runner approves the device code through the API's `ApproveDeviceLogin` with an ID token from Dex's password grant.
 
@@ -51,8 +53,9 @@ mise run e2e
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. `-- --loco` selects another Loco; see [Run unreleased Loco](#run-unreleased-loco). |
 | `mise run validate` | Validates `loco.yaml` and the infrastructure-only upstream chart, and builds the GitOps cluster root and config with `kubectl kustomize`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
-| `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace with `loco`, installs the shop's Kafka, Valkey, PostgreSQL and flagd into the workspace namespace, and deploys the 16 services with one `loco deploy`. The pods then pull their images and start. |
+| `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
 | `mise run verify` | Runs the checks below. |
+| `mise run test` | Runs the runner's regression tests. |
 | `mise run down` | Deletes the cluster and fixtures this checkout created. |
 | `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
 | `mise run report` | Files failed checks as issues in `team-loco/loco`. |
@@ -66,7 +69,17 @@ export HOME=$PWD/.state/home LOCO_CREDENTIAL_STORE=file
 
 Open `http://console.loco-demo.localhost` and sign in as `demo@example.test` with password `demo-password` to see the shop in the dashboard.
 
-The runner creates its own `loco-demo` kind cluster and never uses your current Kubernetes context. It refuses to start when that cluster or its fixture containers already exist, and `down` removes only infrastructure recorded as owned by this checkout.
+To browse Astronomy Shop after deployment, run this from the demo directory and leave it running:
+
+```sh
+namespace=$(uv run --locked python -c 'import json; print(json.load(open(".state/identity.json"))["namespace"])')
+mise exec -- kubectl --kubeconfig .state/kubeconfig --context kind-loco-demo \
+  --namespace "$namespace" port-forward svc/frontend-proxy 8080:8080
+```
+
+Then open `http://localhost:8080`. The runner records the namespace created by the selected Loco version, including versions that isolate each environment in its own namespace.
+
+The runner creates its own `loco-demo` kind cluster and never uses your current Kubernetes context. It refuses to start when that cluster or its fixture containers already exist, and `down` removes only infrastructure recorded as owned by this checkout. Before creating a new cluster, `up` clears the previous installation's generated state so old credentials and workspace IDs cannot be reused.
 
 ## What the test checks
 
@@ -102,7 +115,7 @@ See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
 ## Run unreleased Loco
 
-`mise run setup -- --loco <source>` selects the Loco that later tasks install and use, until the next `setup`. The default source is `release`.
+`mise run setup -- --loco <source>` selects the Loco that later tasks install and use. Setup retains the last selected source; a fresh checkout defaults to `release`. Use `mise run setup -- --loco release` to switch back to the pinned release.
 
 | Source | CLIs | Platform |
 | --- | --- | --- |
