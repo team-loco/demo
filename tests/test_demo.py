@@ -23,6 +23,45 @@ class InstallationTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_reload_rejects_edited_applied_migration_before_building(self):
+        checkout = Path(self.temp.name) / "core"
+        migrations = checkout / demo.MIGRATION_DIR
+        migrations.mkdir(parents=True)
+        applied = migrations / "00001_initial.sql"
+        applied.write_text("CREATE TABLE session_tokens (id int);")
+        (self.state / "database-migrations.json").write_text(
+            json.dumps({"files": demo.migration_hashes(checkout)}))
+        release = self.state / "gitops/releases/control-plane.yaml"
+        release.parent.mkdir(parents=True)
+        release.touch()
+        applied.write_text("CREATE TABLE session_tokens (id int, kind text);")
+
+        with patch.object(demo, "owns_infrastructure", return_value=True), \
+                patch.object(demo, "loco_source", return_value={"source": str(checkout)}), \
+                patch.object(demo, "kube", return_value="./all"), patch.object(demo, "prepare"), \
+                patch.object(demo, "platform_bundle") as build:
+            with self.assertRaisesRegex(RuntimeError, "00001_initial.sql.*mise run down"):
+                demo.reload()
+        build.assert_not_called()
+
+    def test_reload_allows_new_migration_after_release_install(self):
+        checkout = Path(self.temp.name) / "core"
+        migrations = checkout / demo.MIGRATION_DIR
+        migrations.mkdir(parents=True)
+        initial = migrations / "00001_initial.sql"
+        initial.write_text("CREATE TABLE session_tokens (id int);")
+        demo.run(["git", "init", "--quiet"], cwd=checkout)
+        demo.run(["git", "add", "."], cwd=checkout)
+        demo.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.test",
+                  "commit", "--quiet", "-m", "Initial schema"], cwd=checkout)
+        commit = demo.run(["git", "rev-parse", "HEAD"], cwd=checkout).strip()
+        (self.state / "database-migrations.json").write_text(json.dumps({"commit": commit}))
+        added = migrations / "00002_new.sql"
+        added.write_text("ALTER TABLE session_tokens ADD COLUMN kind text;")
+
+        with patch.object(demo, "core_checkout", return_value=checkout):
+            self.assertEqual(set(demo.check_reload_migrations()), {initial.name, added.name})
+
     def test_namespace_discovery_supports_release_and_environment_isolation(self):
         for name in ["loco-ws-shop", "loco-ws-production"]:
             with self.subTest(namespace=name):

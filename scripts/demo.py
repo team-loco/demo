@@ -303,13 +303,55 @@ def record_source(source, version):
     (CACHE / "loco.json").write_text(json.dumps({"source": source, "version": version}) + "\n")
 
 
+MIGRATION_DIR = Path("api/migrations")
+
+
+def core_checkout():
+    source = loco_source()["source"]
+    return CACHE / "loco" if source == "main" else Path(source)
+
+
+def migration_hashes(checkout, commit=None):
+    if commit:
+        paths = run(["git", "ls-tree", "-r", "--name-only", commit, "--", MIGRATION_DIR], cwd=checkout).splitlines()
+        files = {Path(path).name: run(["git", "show", f"{commit}:{path}"], cwd=checkout)
+                 for path in paths if Path(path).parent == MIGRATION_DIR and path.endswith(".sql")}
+    else:
+        files = {path.name: path.read_text() for path in (checkout / MIGRATION_DIR).glob("*.sql")}
+    if not files:
+        raise RuntimeError("No Loco API migrations found in " + str(checkout))
+    return {name: hashlib.sha256(content.encode()).hexdigest() for name, content in files.items()}
+
+
+def check_reload_migrations():
+    state = STATE / "database-migrations.json"
+    rebuild = "Run mise run down && mise run up && mise run deploy to recreate the demo and its database."
+    if not state.is_file():
+        raise RuntimeError("The running demo has no record of its database migrations. " + rebuild)
+    baseline = json.loads(state.read_text())
+    checkout = core_checkout()
+    if "commit" in baseline:
+        try:
+            baseline = migration_hashes(checkout, baseline["commit"])
+        except RuntimeError as exc:
+            raise RuntimeError("Could not read the installed release's database migrations from the Core checkout. "
+                               + rebuild) from exc
+    else:
+        baseline = baseline["files"]
+    candidate = migration_hashes(checkout)
+    changes = sorted(name for name, checksum in baseline.items() if candidate.get(name) != checksum)
+    if changes:
+        raise RuntimeError("Previously installed database migrations changed: " + ", ".join(changes) + ". " + rebuild)
+    return candidate
+
+
 def platform_bundle():
     source = loco_source()
     if source["source"] == "release":
         repository = "ghcr.io/team-loco/loco/platform"
         digest = run(["crane", "digest", f"{repository}:{source['version']}"]).strip()
         return repository + "@" + digest
-    checkout = CACHE / "loco" if source["source"] == "main" else Path(source["source"])
+    checkout = core_checkout()
     with step("Build the core checkout's platform into the registry fixture"):
         route_registry_to_nodes(fixture_addresses()["registry"])
         secret = fixture_inputs()
@@ -519,7 +561,14 @@ def initialize_gitops(bundle):
 def install_loco():
     with step("Bootstrap Flux and reconcile the control plane"):
         flux("install", log=OUT / "flux-install.log", stream=True)
+        local = loco_source()["source"] != "release"
+        if local:
+            baseline = {"files": migration_hashes(core_checkout())}
         bundle = platform_bundle()
+        if not local:
+            bundle_config = json.loads(run(["crane", "config", bundle]))
+            baseline = {"commit": bundle_config["coreCommit"]}
+        (STATE / "database-migrations.json").write_text(json.dumps(baseline))
         initialize_gitops(bundle)
         publish_gitops(bundle, "./control-plane")
     wait_for("API health", lambda: urllib.request.urlopen(API_URL + "/health", timeout=5).status == 200, READY_SECONDS)
@@ -611,9 +660,13 @@ def reload():
         raise RuntimeError("The demo control plane and worker must be installed before reloading.")
     with step("Rebuild the Loco CLIs and verify the application configuration"):
         prepare()
+        candidate = check_reload_migrations()
         validate()
     with step("Update the running demo"):
-        publish_gitops(platform_bundle(), entry)
+        bundle = platform_bundle()
+        # The API can apply migrations even when Flux reports a timeout.
+        (STATE / "database-migrations.json").write_text(json.dumps({"files": candidate}))
+        publish_gitops(bundle, entry)
     with step("Verify the upgraded API with the demo login"):
         loco("whoami", "--host", API_URL, timeout=30)
     print(f"Reloaded Loco {loco_source()['version']}. Dashboard: {WEB_URL}", flush=True)
