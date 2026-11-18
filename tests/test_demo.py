@@ -154,6 +154,15 @@ class InstallationTests(unittest.TestCase):
                     self.assertFalse((self.state / "cluster-creating").exists())
                 install.assert_called_once()
 
+    def test_streamed_release_logs_progress_and_keeps_manifest_separate(self):
+        log = self.state / "platform-release.log"
+        with (self.state / "manifest.json").open("w+t") as manifest:
+            demo.run([sys.executable, "-c", "import sys; print('building', file=sys.stderr); print('{}')"],
+                     log=log, stdout_file=manifest)
+            manifest.seek(0)
+            self.assertEqual(manifest.read(), "{}\n")
+        self.assertEqual(log.read_text(), "building\n")
+
     def test_interrupt_kills_streamed_process_group(self):
         with patch.object(demo.subprocess, "Popen") as popen, patch.object(demo.os, "killpg") as kill:
             process = popen.return_value.__enter__.return_value

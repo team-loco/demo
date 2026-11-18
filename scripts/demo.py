@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -109,13 +110,14 @@ def resources():
     return json.loads((STATE / "resources.json").read_text())
 
 
-def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None, cwd=ROOT):
+def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream=False, env=None, cwd=ROOT,
+        stdout_file=None):
     args = [str(a) for a in args]
     env = {**os.environ, **(env or {})}
     if log:
         Path(log).parent.mkdir(parents=True, exist_ok=True)
-    if stream:
-        result = run_streamed(args, timeout=timeout, env=env, log=log, cwd=cwd)
+    if stream or stdout_file is not None:
+        result = run_streamed(args, timeout=timeout, env=env, log=log, cwd=cwd, stdout_file=stdout_file)
     else:
         result = subprocess.run(args, cwd=cwd, input=input, text=True, stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, timeout=timeout, env=env)
@@ -127,13 +129,15 @@ def run(args, *, input=None, check=True, timeout=READY_SECONDS, log=None, stream
     return result.stdout if check else result
 
 
-def run_streamed(args, *, timeout, env, log, cwd):
+def run_streamed(args, *, timeout, env, log, cwd, stdout_file):
     output = []
+    stdout = subprocess.PIPE if stdout_file is None else stdout_file
+    stderr = subprocess.STDOUT if stdout_file is None else subprocess.PIPE
     with Path(log).open("w") as logfile, subprocess.Popen(
-            args, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+            args, cwd=cwd, env=env, stdout=stdout, stderr=stderr, text=True, bufsize=1,
             start_new_session=True) as process:
         def read_output():
-            for line in process.stdout:
+            for line in (process.stdout if stdout_file is None else process.stderr):
                 output.append(line)
                 print(redact(line), end="", flush=True)
                 logfile.write(redact(line))
@@ -314,13 +318,14 @@ def platform_bundle():
         route_registry_to_nodes(fixture_addresses()["registry"])
         secret = fixture_inputs()
         # Parallel builds share stderr. Use plain progress to keep them from redrawing the terminal.
-        manifest = subprocess.run(
-            ["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
-             "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
-             "--username", secret["push-username"], "--password", secret["push-password"]],
-            cwd=checkout, stdout=subprocess.PIPE, text=True, check=True, timeout=INSTALL_SECONDS,
-            env={**os.environ, "BUILDKIT_PROGRESS": "plain"},
-        ).stdout
+        with tempfile.TemporaryFile(mode="w+t") as manifest_file:
+            run(["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
+                 "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
+                 "--username", secret["push-username"], "--password", secret["push-password"]],
+                cwd=checkout, stdout_file=manifest_file, timeout=INSTALL_SECONDS,
+                log=OUT / "platform-release.log", env={"BUILDKIT_PROGRESS": "plain"})
+            manifest_file.seek(0)
+            manifest = manifest_file.read()
         (STATE / "release.json").write_text(manifest)
         return json.loads(manifest)["bundle"]
 
@@ -1219,13 +1224,13 @@ def main():
     args = parser.parse_args()
     if args.loco and args.command != "prepare":
         parser.error("--loco applies only to prepare")
-    if args.command in {"up", "down", "e2e"}:
+    if args.command in {"up", "down", "reload", "e2e"}:
         CACHE.mkdir(exist_ok=True)
         with (CACHE / "lifecycle.lock").open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                print("A demo up, down, or e2e task is already running in this checkout.", file=sys.stderr)
+                print("A demo lifecycle task is already running in this checkout.", file=sys.stderr)
                 return 1
             try:
                 return run_command(args)
