@@ -19,6 +19,9 @@ metrics-server:
   enabled: true
   args:
   - --kubelet-insecure-tls
+controller:
+  image:
+    pullPolicy: IfNotPresent
 builds:
   privateEgress: []
   pushSecretName: loco-registry-push
