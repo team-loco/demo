@@ -562,6 +562,24 @@ def up():
     print(f"Loco is running. Dashboard: {WEB_URL} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
 
 
+def reload():
+    if not owns_infrastructure() or not (STATE / "gitops/releases/control-plane.yaml").is_file():
+        raise RuntimeError("No installed demo owned by this checkout. Run mise run up first.")
+    if loco_source()["source"] == "release":
+        raise RuntimeError("Reload requires a Core checkout. Run mise run setup -- --loco ../core first.")
+    entry = kube("-n", "flux-system", "get", "kustomization", "loco", "-o", "jsonpath={.spec.path}")
+    if entry != "./all":
+        raise RuntimeError("The demo control plane and worker must be installed before reloading.")
+    with step("Rebuild the Loco CLIs and verify the application configuration"):
+        prepare()
+        validate()
+    with step("Update the running demo"):
+        publish_gitops(platform_bundle(), entry)
+    with step("Verify the upgraded API with the demo login"):
+        loco("whoami", "--host", API_URL, timeout=30)
+    print(f"Reloaded Loco {loco_source()['version']}. Dashboard: {WEB_URL}", flush=True)
+
+
 def rpc(procedure, data, token=None):
     headers = {"Content-Type": "application/json", "Connect-Protocol-Version": "1"}
     if token:
@@ -1129,7 +1147,7 @@ def down():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["prepare", "validate", "up", "deploy", "verify", "e2e", "down", "report"])
+    parser.add_argument("command", choices=["prepare", "validate", "up", "reload", "deploy", "verify", "e2e", "down", "report"])
     parser.add_argument("--keep", action="store_true")
     parser.add_argument("--loco", help="prepare only: release (default), main, or the path of a core checkout")
     args = parser.parse_args()
