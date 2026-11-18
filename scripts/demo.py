@@ -740,7 +740,9 @@ def create_workspace():
         return
     with step("Create the demo organization and workspace"):
         org_id = created_id(loco("org", "create", "demo"))
-        ws_id = created_id(loco("workspace", "create", "astronomy-shop", "--org-id", org_id))
+        workspace = api("loco.workspace.v1.WorkspaceService/CreateWorkspace",
+                        {"orgId": org_id, "name": "astronomy-shop"})
+        ws_id = workspace["workspaceId"]
         loco("use", f"{org_id}/{ws_id}")
         environments = api("loco.environment.v1.EnvironmentService/ListEnvironments", {"workspaceId": ws_id})
         env_id = next(e["id"] for e in environments.get("environments", []) if e["name"] == "production")
