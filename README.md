@@ -74,16 +74,6 @@ Open `http://console.loco-demo.localhost` and sign in as `demo@example.test` wit
 
 Open the storefront at [shop.loco-demo-apps.localhost:8080](http://shop.loco-demo-apps.localhost:8080/) after deployment. The port binds to loopback. Kind sets the port mapping when it creates the cluster, so a cluster created before this change needs to be recreated to serve the storefront.
 
-To browse Astronomy Shop after deployment, run this from the demo directory and leave it running:
-
-```sh
-namespace=$(mise exec -- python -c 'import json; print(json.load(open(".state/identity.json"))["namespace"])')
-mise exec -- kubectl --kubeconfig .state/kubeconfig --context kind-loco-demo \
-  --namespace "$namespace" port-forward svc/frontend-proxy 8080:8080
-```
-
-Then open `http://localhost:8080`. The runner records the namespace created by the selected Loco version, including versions that isolate each environment in its own namespace.
-
 The runner creates its own `loco-demo` kind cluster and uses its own kubeconfig. If kind startup or teardown is interrupted, rerun `mise run up` to clean up the partial cluster owned by this checkout and start fresh. To replace an existing installation, run `mise run down` followed by `mise run up`. A fresh cluster starts with new credentials and workspace state.
 
 ## What the test checks
@@ -92,6 +82,7 @@ The runner creates its own `loco-demo` kind cluster and uses its own kubeconfig.
 | --- | --- |
 | Installation | Flux reconciles the control plane and worker; `locoadm` signs in the configured admin, delivers the join token, and reports enrollment and a heartbeat with no unclaimed admins. |
 | Deployments | All 16 services deploy and every resource reports healthy. |
+| Storefront | The local Gateway serves the shop page and product catalog. |
 | Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
 | Logs | `QueryLogs` returns the checkout order from both SDK-pushed OTLP logs and container stdout. |
 | Metrics | `QueryMetrics` reports the payment transaction counter increasing after checkout. |
