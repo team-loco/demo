@@ -537,19 +537,47 @@ def install_loco():
             raise RuntimeError("The dashboard did not serve its page")
 
 
+def cluster_exists():
+    return CLUSTER in run(["kind", "get", "clusters"]).splitlines()
+
+
+def fixture_containers():
+    containers = set(run(["docker", "ps", "-a", "--format", "{{.Names}}"]).splitlines())
+    return containers.intersection(f"{PROJECT}-{name}" for name in FIXTURES)
+
+
+def teardown_pending():
+    return (STATE / "teardown-pending").exists()
+
+
+def clear_interrupted_teardown():
+    if not owns_infrastructure():
+        return
+    if teardown_pending():
+        down()
+    elif cluster_exists() and not fixture_containers():
+        # Teardown can leave a worker behind after deleting the control plane.
+        nodes = run(["kind", "get", "nodes", "--name", CLUSTER]).splitlines()
+        if f"{CLUSTER}-control-plane" not in nodes:
+            down()
+
+
 def up():
     global INFRA_STARTED
     with step("Prepare the Loco CLIs and verify the application configuration"):
         prepare()
         validate()
-    if CLUSTER in run(["kind", "get", "clusters"]).splitlines():
-        raise RuntimeError("loco-demo already exists. Reuse it with deploy/verify, or run mise run down before up.")
-    containers = set(run(["docker", "ps", "-a", "--format", "{{.Names}}"]).splitlines())
-    collisions = containers.intersection(f"{PROJECT}-{name}" for name in FIXTURES)
+    clear_interrupted_teardown()
+    if cluster_exists():
+        if not owns_infrastructure():
+            raise RuntimeError(f"{CLUSTER} already exists. Run mise run down from the checkout that owns it.")
+        raise RuntimeError(f"{CLUSTER} already exists. Run mise run deploy to use it or mise run down to replace it.")
+    collisions = fixture_containers()
     if collisions:
         raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
     # A new cluster must not reuse another installation's login or workspace IDs.
-    shutil.rmtree(STATE)
+    if STATE.exists():
+        shutil.rmtree(STATE)
     STATE.mkdir()
     write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
     INFRA_STARTED = True
@@ -667,6 +695,18 @@ def record_resources():
 
 
 def deploy_services():
+    if not owns_infrastructure():
+        raise RuntimeError("No demo owned by this checkout. Run mise run up first.")
+    if teardown_pending():
+        raise RuntimeError("Demo teardown is pending. Run mise run up to finish cleanup and start a fresh demo.")
+    try:
+        with urllib.request.urlopen(API_URL + "/health", timeout=5) as response:
+            healthy = response.status == 200
+    except OSError:
+        healthy = False
+    if not healthy:
+        raise RuntimeError("The demo API is unavailable. Run mise run up, or run mise run down first to replace the existing cluster.")
+    create_workspace()
     with step("Deploy the 16 services"):
         output = loco("deploy", "--file", LOCO_FILE, "--yes", "--confirm-import", "--env", "production",
                       log=OUT / "deploy.log")
@@ -674,7 +714,6 @@ def deploy_services():
 
 
 def deploy():
-    create_workspace()
     if not record("deploy", deploy_services):
         return False
     record_resources()
@@ -1138,10 +1177,13 @@ def down():
     if not owns_infrastructure():
         print("No infrastructure owned by this checkout; nothing to remove", flush=True)
         return
-    compose("down", "--volumes", "--remove-orphans", timeout=120)
-    run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], timeout=120)
-    if CLUSTER in run(["kind", "get", "clusters"]).splitlines():
-        raise RuntimeError(f"kind still lists {CLUSTER}; run mise run down again")
+    (STATE / "teardown-pending").touch()
+    with step("Remove demo fixtures"):
+        compose("down", "--volumes", "--remove-orphans", timeout=120)
+    with step("Delete demo kind cluster"):
+        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], timeout=120)
+        if cluster_exists():
+            raise RuntimeError(f"kind still lists {CLUSTER}. Run mise run down again to finish teardown.")
     shutil.rmtree(STATE)
 
 

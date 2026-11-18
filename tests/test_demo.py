@@ -84,6 +84,60 @@ class InstallationTests(unittest.TestCase):
                 demo.up()
         self.assertEqual(identity.read_text(), "existing-workspace")
 
+    def test_up_recovers_owned_partial_teardown(self):
+        for interrupted in (False, True):
+            with self.subTest(interrupted=interrupted):
+                self.state.mkdir(exist_ok=True)
+                demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
+                (self.state / "identity.json").write_text("stale-workspace")
+                nodes = [f"{demo.CLUSTER}-worker"]
+                if interrupted:
+                    nodes.append(f"{demo.CLUSTER}-control-plane")
+
+                def run(args, **kwargs):
+                    match args[:3]:
+                        case ["kind", "get", "clusters"]:
+                            return demo.CLUSTER if nodes else ""
+                        case ["kind", "get", "nodes"]:
+                            return "\n".join(nodes)
+                        case ["kind", "delete", "cluster"]:
+                            if len(nodes) == 2:
+                                nodes.remove(f"{demo.CLUSTER}-worker")
+                                raise RuntimeError("kind deletion interrupted")
+                            nodes.clear()
+                        case ["kind", "create", "cluster"]:
+                            self.assertFalse(nodes)
+                            self.assertFalse((self.state / "identity.json").exists())
+                            self.assertFalse(demo.teardown_pending())
+                            nodes.append(f"{demo.CLUSTER}-control-plane")
+                        case ["docker", "ps", "-a"]:
+                            return ""
+                        case _:
+                            self.fail(f"Unexpected command {args}")
+
+                with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
+                        patch.object(demo, "run", side_effect=run), patch.object(demo, "compose"), \
+                        patch.object(demo, "start_fixtures"), patch.object(demo, "install_loco") as install, \
+                        patch.object(demo, "INFRA_STARTED", False):
+                    if interrupted:
+                        with self.assertRaisesRegex(RuntimeError, "kind deletion interrupted"):
+                            demo.down()
+                        self.assertTrue(demo.teardown_pending())
+                        self.assertTrue(demo.owns_infrastructure())
+                    demo.up()
+                install.assert_called_once()
+
+    def test_deploy_checks_api_before_using_saved_credentials(self):
+        demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
+        (self.state / "identity.json").write_text("stale-workspace")
+        with patch.object(demo, "OUT", self.state), patch.object(demo, "RESULTS", []), \
+                patch.object(demo, "create_workspace") as workspace, patch.object(demo, "loco") as loco, \
+                patch.object(demo.urllib.request, "urlopen", side_effect=ConnectionRefusedError):
+            self.assertFalse(demo.deploy())
+            self.assertIn("The demo API is unavailable. Run mise run up", demo.RESULTS[0]["detail"])
+        workspace.assert_not_called()
+        loco.assert_not_called()
+
     def test_checkout_recovers_when_failed_response_already_consumed_cart(self):
         carts, attempts = {}, []
 

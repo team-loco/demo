@@ -82,7 +82,7 @@ mise exec -- kubectl --kubeconfig .state/kubeconfig --context kind-loco-demo \
 
 Then open `http://localhost:8080`. The runner records the namespace created by the selected Loco version, including versions that isolate each environment in its own namespace.
 
-The runner creates its own `loco-demo` kind cluster and never uses your current Kubernetes context. It refuses to start when that cluster or its fixture containers already exist, and `down` removes only infrastructure recorded as owned by this checkout. Before creating a new cluster, `up` clears the previous installation's generated state so old credentials and workspace IDs cannot be reused.
+The runner creates its own `loco-demo` kind cluster and uses its own kubeconfig. If `down` is interrupted, `up` finishes teardown for this checkout before creating a fresh cluster. It also recovers an owned cluster whose control plane and fixtures are already gone. To replace an existing installation, run `mise run down` followed by `mise run up`. A fresh cluster starts with new credentials and workspace state.
 
 ## What the test checks
 
