@@ -55,6 +55,7 @@ This leaves the demo running. Use `mise run down` when you are finished. To use 
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. `-- --loco` selects another Loco; see [Run unreleased Loco](#run-unreleased-loco). |
 | `mise run validate` | Validates `loco.yaml` and the infrastructure-only upstream chart, and builds the GitOps cluster root and config with `kubectl kustomize`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
+| `mise run reload` | Rebuilds the selected Core source and updates the running demo in place while keeping the workspace and fixture data. |
 | `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
 | `mise run verify` | Runs the checks below. |
 | `mise run test` | Runs the runner's regression tests. |
@@ -134,6 +135,10 @@ mise run e2e
 ```
 
 For both, `setup` builds the CLIs with Go. For `main`, it also trusts the cloned repository's `mise.toml` and installs its pinned tools. A supplied checkout needs its own `mise` tools installed. During `up`, `release:local` builds six images and the bundle, and writes its manifest to `.state/release.json`. Flux reads the bundle from `registry.loco-demo.localhost:5000`; each node's containerd routes that name to the fixture, which listens on `127.0.0.1:15000` for host pushes. The runner replaces the bundle digest only in `.state/gitops/`. `report` names the commit for `main` and files nothing for a checkout.
+
+After editing or updating the selected Core checkout, run `mise run reload` from `demo`. It rebuilds the CLIs and platform bundle, then waits for Flux to reconcile the control plane and worker. With `main` selected, it fetches the latest `origin/main` first. Refresh the dashboard after the command completes.
+
+Core applies new database migrations at startup. If your checkout edits a migration that the demo database already applied, use a fresh demo or update the local schema before reloading.
 
 ## Versions
 

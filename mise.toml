@@ -21,6 +21,9 @@ run = "uv run --locked python scripts/demo.py validate"
 run = "uv run --locked python scripts/demo.py e2e"
 [tasks.up]
 run = "uv run --locked python scripts/demo.py up"
+[tasks.reload]
+description = "Rebuild Core and update the running demo in place"
+run = "uv run --locked python scripts/demo.py reload"
 [tasks.deploy]
 run = "uv run --locked python scripts/demo.py deploy"
 [tasks.verify]
