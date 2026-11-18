@@ -1,4 +1,15 @@
 default:
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  securityContext: &restricted
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
   envOverrides:
   - name: OTEL_COLLECTOR_NAME
     value: otel-col-deploy.loco-obs.svc.cluster.local
@@ -43,11 +54,13 @@ components:
     enabled: false
   flagd:
     enabled: true
+    securityContext: *restricted
     imageOverride:
       repository: ghcr.io/open-feature/flagd
       tag: v0.16.0@sha256:32234e63c1d0634883aabd31cbd46802934aaaef0153dfd653b5d1017940bb4e
     initContainers:
     - name: init-config
+      securityContext: *restricted
       image: busybox:1.37.0@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
       command:
       - sh
@@ -86,16 +99,26 @@ components:
         tag: 3.1.0-flagd-ui@sha256:97a3d37e709f80e2018cdc0d45ea12d5b59092693e0e003d65089da966107062
   kafka:
     enabled: true
+    securityContext: *restricted
     imageOverride:
       repository: ghcr.io/open-telemetry/demo
       tag: 3.1.0-kafka@sha256:4402ba7fd54470782a445f07c67e1d3f44d88ac8c5c0abf5d8298190a3f7a6ee
   astronomy-db:
     enabled: true
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+      runAsGroup: 999
+      fsGroup: 999
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext: *restricted
     imageOverride:
       repository: postgres
       tag: 18.4@sha256:a02db8cac496f15b094798a38254f14d6e00741f709360e5e00bb6668ea31636
   valkey-cart:
     enabled: true
+    securityContext: *restricted
     imageOverride:
       repository: ghcr.io/valkey-io/valkey
       tag: 9.0.4-alpine3.23@sha256:107b203169a20ef7c87548c157f4e4a833dbbbd20fefd3a26740b7f98ac80216

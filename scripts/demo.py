@@ -60,8 +60,6 @@ CUSTOMER = {
     "creditCard": {"creditCardNumber": "4432-8015-6152-0454", "creditCardExpirationMonth": 1,
                    "creditCardExpirationYear": 2039, "creditCardCvv": 672},
 }
-# Defaults of the loco-worker chart.
-WORKSPACE_NAMESPACE_PREFIX = "loco-ws-"
 READY_SECONDS = 600
 INSTALL_SECONDS = 2400
 TELEMETRY_SECONDS = 240
@@ -88,7 +86,21 @@ def workspace_id():
 
 
 def app_namespace():
-    return WORKSPACE_NAMESPACE_PREFIX + workspace_id()
+    return identity()["namespace"]
+
+
+def discover_app_namespace():
+    data = identity()
+    namespaces = json.loads(kube("get", "namespaces", "-l", f"loco.io/workspace-id={data['workspaceId']}", "-o", "json"))
+    names = [ns["metadata"]["name"] for ns in namespaces["items"]
+             if ns["metadata"]["labels"].get("loco.io/environment-id") == data["environmentId"]]
+    if not names:
+        return False
+    if len(names) != 1:
+        raise RuntimeError(f"Multiple workload namespaces for the demo environment: {names}")
+    data["namespace"] = names[0]
+    (STATE / "identity.json").write_text(json.dumps(data))
+    return True
 
 
 def resources():
@@ -266,6 +278,8 @@ def prepare(source=None):
         download_release_binaries({line.split()[-1]: line.split()[0] for line in lines if line.strip()})
     else:
         checkout = prepare_main() if source == "main" else Path(source).resolve()
+        if not checkout.is_dir():
+            raise RuntimeError(f"Loco checkout {checkout} does not exist; run mise run setup -- --loco <checkout> or --loco release")
         commit = run(["git", "-C", checkout, "rev-parse", "HEAD"]).strip()
         version = "0.0.0-local.g" + commit[:12]
         record_source(source if source == "main" else str(checkout), version)
@@ -473,6 +487,14 @@ def initialize_gitops(bundle):
             "--api-env-file", env_file, log="init")
     shutil.copytree(GITOPS, repo, dirs_exist_ok=True,
                     ignore=shutil.ignore_patterns("api-env.yaml", "openbao-seal.yaml"))
+    nodes = json.loads(kube("get", "nodes", "-o", "json"))["items"]
+    architectures = {node["status"]["nodeInfo"]["architecture"] for node in nodes}
+    if len(architectures) != 1 or not architectures <= {"amd64", "arm64"}:
+        raise RuntimeError(f"Expected kind nodes with one supported architecture, got {sorted(architectures)}")
+    values_path = repo / "clusters/local/values/loco-control-plane.yaml"
+    values = yaml.safe_load(values_path.read_text())
+    values["api"]["env"]["LOCO_TARGET_PLATFORM"] = "linux/" + architectures.pop()
+    write_yaml(values_path, values)
     repo.chmod(0o700)
     credentials = []
     for role in ["push", "pull"]:
@@ -496,8 +518,10 @@ def install_loco():
         publish_gitops(bundle, "./control-plane")
     wait_for("API health", lambda: urllib.request.urlopen(API_URL + "/health", timeout=5).status == 200, READY_SECONDS)
     login()
-    locoadm("cluster", "create", "--name", "local", "--region", REGION, "--tier", "production",
-            "--kube-context", CONTEXT, log="cluster-create")
+    args = ["cluster", "create", "--name", "local", "--region", REGION, "--kube-context", CONTEXT]
+    if "--tier" in run([binary("locoadm"), "cluster", "create", "--help"]):
+        args.extend(["--tier", "production"])
+    locoadm(*args, log="cluster-create")
     with step("Reconcile the worker"):
         publish_gitops(bundle, "./all")
     def enrolled():
@@ -505,7 +529,8 @@ def install_loco():
         (OUT / "installation-status.json").write_text(json.dumps(status, indent=2) + "\n")
         return not status.get("unclaimedAdmins") and any(
             item["cluster"]["name"] == "local" and item["enrollment"] == "enrolled"
-            and item["cluster"].get("lastHeartbeat") for item in status["clusters"])
+            and item["cluster"].get("lastHeartbeat") and item["cluster"].get("healthStatus") == "healthy"
+            for item in status["clusters"])
     wait_for("worker enrollment and heartbeat with no unclaimed admins", enrolled, READY_SECONDS)
     with urllib.request.urlopen(WEB_URL, timeout=30) as response:
         if "<html" not in response.read().decode().lower():
@@ -523,6 +548,9 @@ def up():
     collisions = containers.intersection(f"{PROJECT}-{name}" for name in FIXTURES)
     if collisions:
         raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
+    # A new cluster must not reuse another installation's login or workspace IDs.
+    shutil.rmtree(STATE)
+    STATE.mkdir()
     write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
     INFRA_STARTED = True
     with step("Create kind cluster"):
@@ -629,13 +657,15 @@ def deploy_services():
 
 def deploy():
     create_workspace()
+    if not record("deploy", deploy_services):
+        return False
+    record_resources()
+    wait_for("application namespace", discover_app_namespace, READY_SECONDS)
     with step("Install the shop's Kafka, Valkey, PostgreSQL and flagd"):
         run(["helm", "upgrade", "--install", "astronomy", CACHE / "charts/opentelemetry-demo",
              "--namespace", app_namespace(), "--create-namespace", "-f", CONFIG / "demo-infrastructure.yaml",
-             "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT, "--wait", "--timeout", "10m"],
+             "--kubeconfig", STATE / "kubeconfig", "--kube-context", CONTEXT, "--wait", "--timeout", "10m", "--hide-notes"],
             timeout=READY_SECONDS + 120, log=OUT / "helm-astronomy.log", stream=True)
-    record("deploy", deploy_services)
-    record_resources()
     return all(r["status"] == "PASS" for r in RESULTS)
 
 
@@ -797,7 +827,6 @@ def check_health(ids):
 def traffic():
     baseline, _ = payment_counter()
     (STATE / "metric-baseline.json").write_text(json.dumps({"value": baseline}))
-    user_id = "demo-" + uuid.uuid4().hex
     port = 18080
     log = (OUT / "frontend-forward.log").open("w")
     proc = subprocess.Popen(["kubectl", "--kubeconfig", str(STATE / "kubeconfig"), "--context", CONTEXT,
@@ -814,18 +843,19 @@ def traffic():
     try:
         wait_for("frontend port forward", lambda: request("/api/products"), seconds=30)
         products = request("/api/products")
-        cart = request("/api/cart", {"userId": user_id, "item": {"productId": products[0]["id"], "quantity": 1}})
-        if not cart.get("items"):
-            raise RuntimeError("Add-to-cart response contains no items")
-        person = {**CUSTOMER, "userId": user_id}
         if not request("/api/recommendations?currencyCode=USD"):
             raise RuntimeError("Recommendation service returned no products")
         order = {}
         def checkout():
+            user_id = "demo-" + uuid.uuid4().hex
+            cart = request("/api/cart", {"userId": user_id, "item": {"productId": products[0]["id"], "quantity": 1}})
+            if not cart.get("items"):
+                raise RuntimeError("Add-to-cart response contains no items")
+            person = {**CUSTOMER, "userId": user_id}
             trace_id = secrets.token_hex(16)
             order.update(request("/api/checkout?currencyCode=USD", person, trace_id), traceId=trace_id)
             return bool(order.get("orderId"))
-        # Payment connects to flagd on its first charge and can miss that request's deadline.
+        # A failed response can follow a completed order that already emptied its cart.
         wait_for("checkout", checkout, seconds=60)
         (STATE / "order.json").write_text(json.dumps(order))
         result = {"orderId": order["orderId"], "traceId": order["traceId"]}
@@ -1008,6 +1038,7 @@ def diagnostics():
     if (STATE / "kubeconfig").exists():
         for args, name in [
             (["get", "pods", "-A", "-o", "wide"], "pods"),
+            (["get", "pods", "-A", "-o", "json"], "pod-status"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),
             (["get", "kustomizations.kustomize.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io", "-A"], "flux"),
             (["get", "applications", "-A", "-o", "yaml"], "applications"),
@@ -1015,7 +1046,7 @@ def diagnostics():
             with contextlib.suppress(Exception):
                 kube(*args, check=False, timeout=30, log=OUT / (name + ".log"))
         namespaces = ["loco-system", "flux-system", "cert-manager"]
-        if (STATE / "identity.json").exists():
+        if (STATE / "identity.json").exists() and "namespace" in identity():
             namespaces.append(app_namespace())
         for ns in namespaces:
             with contextlib.suppress(Exception):
@@ -1109,8 +1140,7 @@ def main():
     if args.command == "e2e":
         success = False
         try:
-            if record("install", up):
-                deploy()
+            if record("install", up) and deploy():
                 verify()
             success = all(r["status"] == "PASS" for r in RESULTS)
         finally:

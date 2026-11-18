@@ -22,6 +22,7 @@ jobs:
           version: 2026.10.6
       - run: mise run setup
       - run: mise run validate
+      - run: mise run test
       - run: mise run lint
   e2e:
     needs: validate
