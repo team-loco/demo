@@ -98,15 +98,16 @@ class InstallationTests(unittest.TestCase):
                 down.assert_not_called()
                 self.assertEqual(identity.read_text(), "existing-workspace")
 
-    def test_up_recovers_owned_partial_teardown(self):
-        for interrupted in (False, True):
-            with self.subTest(interrupted=interrupted):
+    def test_up_recovers_owned_partial_cluster(self):
+        for phase in ("worker left behind", "interrupted deletion", "interrupted creation"):
+            with self.subTest(phase=phase):
                 self.state.mkdir(exist_ok=True)
                 demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
                 (self.state / "identity.json").write_text("stale-workspace")
                 (self.state / "kubeconfig").touch()
-                nodes = [f"{demo.CLUSTER}-worker"]
-                if interrupted:
+                starting = phase == "interrupted creation"
+                nodes = [] if starting else [f"{demo.CLUSTER}-worker"]
+                if phase == "interrupted deletion":
                     nodes.append(f"{demo.CLUSTER}-control-plane")
 
                 def run(args, **kwargs):
@@ -121,10 +122,15 @@ class InstallationTests(unittest.TestCase):
                                 raise RuntimeError("kind deletion interrupted")
                             nodes.clear()
                         case ["kind", "create", "cluster"]:
+                            nonlocal starting
                             self.assertFalse(nodes)
                             self.assertFalse((self.state / "identity.json").exists())
                             self.assertFalse(demo.teardown_pending())
                             nodes.append(f"{demo.CLUSTER}-control-plane")
+                            args[-1].touch()
+                            if starting:
+                                starting = False
+                                raise KeyboardInterrupt
                         case ["docker", "ps", "-a"]:
                             return ""
                         case _:
@@ -134,49 +140,19 @@ class InstallationTests(unittest.TestCase):
                         patch.object(demo, "run", side_effect=run), patch.object(demo, "compose"), \
                         patch.object(demo, "start_fixtures"), patch.object(demo, "install_loco") as install, \
                         patch.object(demo, "INFRA_STARTED", False):
-                    if interrupted:
+                    if phase == "interrupted deletion":
                         with self.assertRaisesRegex(RuntimeError, "kind deletion interrupted"):
                             demo.down()
                         self.assertTrue(demo.teardown_pending())
                         self.assertTrue(demo.owns_infrastructure())
+                    elif starting:
+                        with self.assertRaises(KeyboardInterrupt):
+                            demo.up()
+                        self.assertTrue((self.state / "kubeconfig").is_file())
+                        self.assertTrue((self.state / "cluster-creating").exists())
                     demo.up()
+                    self.assertFalse((self.state / "cluster-creating").exists())
                 install.assert_called_once()
-
-    def test_up_recovers_interrupted_kind_creation_with_control_plane_present(self):
-        nodes = []
-
-        def run(args, **kwargs):
-            match args[:3]:
-                case ["kind", "get", "clusters"]:
-                    return demo.CLUSTER if nodes else ""
-                case ["kind", "get", "nodes"]:
-                    return "\n".join(nodes)
-                case ["kind", "delete", "cluster"]:
-                    nodes.clear()
-                case ["kind", "create", "cluster"]:
-                    self.assertFalse(nodes)
-                    nodes.append(f"{demo.CLUSTER}-control-plane")
-                    args[-1].touch()
-                    if not retry:
-                        raise KeyboardInterrupt
-                case ["docker", "ps", "-a"]:
-                    return ""
-                case _:
-                    self.fail(f"Unexpected command {args}")
-
-        retry = False
-        with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
-                patch.object(demo, "run", side_effect=run), patch.object(demo, "compose"), \
-                patch.object(demo, "start_fixtures"), patch.object(demo, "install_loco") as install, \
-                patch.object(demo, "INFRA_STARTED", False):
-            with self.assertRaises(KeyboardInterrupt):
-                demo.up()
-            self.assertTrue((self.state / "kubeconfig").is_file())
-            self.assertTrue((self.state / "cluster-creating").exists())
-            retry = True
-            demo.up()
-            self.assertFalse((self.state / "cluster-creating").exists())
-        install.assert_called_once()
 
     def test_interrupt_kills_streamed_process_group(self):
         with patch.object(demo.subprocess, "Popen") as popen, patch.object(demo.os, "killpg") as kill:
