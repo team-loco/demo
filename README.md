@@ -131,7 +131,7 @@ For both, `setup` builds the CLIs with Go. For `main`, it also trusts the cloned
 
 After editing or updating the selected Core checkout, run `mise run reload` from `demo`. It rebuilds the CLIs and platform bundle, then waits for Flux to reconcile the control plane and worker. With `main` selected, it fetches the latest `origin/main` first. Refresh the dashboard after the command completes.
 
-Core applies new database migrations at startup. If your checkout edits a migration that the demo database already applied, use a fresh demo or update the local schema before reloading.
+Core applies new database migrations at startup. If your checkout changes a previously installed migration, reload stops before building the platform. Run `mise run down && mise run up && mise run deploy` to recreate the demo with the current schema. This clears the demo database and workspace.
 
 ## Versions
 
