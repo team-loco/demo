@@ -2,6 +2,7 @@ import argparse
 import base64
 import contextlib
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import math
@@ -139,19 +140,24 @@ def run_streamed(args, *, timeout, env, log, cwd):
         reader = threading.Thread(target=read_output)
         reader.start()
         started = time.monotonic()
-        while True:
-            try:
-                process.wait(timeout=max(0, min(PROGRESS_SECONDS, started + timeout - time.monotonic())))
-                break
-            except subprocess.TimeoutExpired:
-                if time.monotonic() >= started + timeout:
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGKILL)
-                    process.wait()
-                    reader.join()
-                    raise subprocess.TimeoutExpired(args[0], timeout, output=redact("".join(output))) from None
-                print(f"RUN {Path(log).stem} ({time.monotonic() - started:.0f}s elapsed)", flush=True)
-        reader.join()
+        try:
+            while True:
+                try:
+                    process.wait(timeout=max(0, min(PROGRESS_SECONDS, started + timeout - time.monotonic())))
+                    break
+                except subprocess.TimeoutExpired:
+                    if time.monotonic() >= started + timeout:
+                        raise
+                    print(f"RUN {Path(log).stem} ({time.monotonic() - started:.0f}s elapsed)", flush=True)
+            reader.join()
+        except (KeyboardInterrupt, subprocess.TimeoutExpired) as exc:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+            reader.join()
+            if isinstance(exc, subprocess.TimeoutExpired):
+                raise subprocess.TimeoutExpired(args[0], timeout, output=redact("".join(output))) from None
+            raise
     return subprocess.CompletedProcess(args, process.returncode, "".join(output))
 
 
@@ -244,12 +250,6 @@ def locoadm(*args, log, timeout=INSTALL_SECONDS):
                timeout=timeout, stream=True, cwd=STATE)
 
 
-def output(args, cwd):
-    # Build and release tools report progress on stderr; stdout carries only their result.
-    return subprocess.run([str(a) for a in args], cwd=cwd, stdout=subprocess.PIPE, text=True, check=True,
-                          timeout=INSTALL_SECONDS).stdout
-
-
 def build_binaries(checkout, version):
     for tool in ["loco", "locoadm"]:
         run(["go", "-C", checkout / "cmd", "build", "-trimpath", "-ldflags", f"-s -w -X main.version=v{version}",
@@ -312,9 +312,14 @@ def platform_bundle():
     with step("Build the core checkout's platform into the registry fixture"):
         route_registry_to_nodes(fixture_addresses()["registry"])
         secret = fixture_inputs()
-        manifest = output(["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
-                           "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
-                           "--username", secret["push-username"], "--password", secret["push-password"]], cwd=checkout)
+        # Parallel builds share stderr. Use plain progress to keep them from redrawing the terminal.
+        manifest = subprocess.run(
+            ["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
+             "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
+             "--username", secret["push-username"], "--password", secret["push-password"]],
+            cwd=checkout, stdout=subprocess.PIPE, text=True, check=True, timeout=INSTALL_SECONDS,
+            env={**os.environ, "BUILDKIT_PROGRESS": "plain"},
+        ).stdout
         (STATE / "release.json").write_text(manifest)
         return json.loads(manifest)["bundle"]
 
@@ -550,15 +555,17 @@ def teardown_pending():
     return (STATE / "teardown-pending").exists()
 
 
-def clear_interrupted_teardown():
+def clear_interrupted_lifecycle():
     if not owns_infrastructure():
         return
     if teardown_pending():
         down()
     elif cluster_exists() and not fixture_containers():
-        # Teardown can leave a worker behind after deleting the control plane.
-        nodes = run(["kind", "get", "nodes", "--name", CLUSTER]).splitlines()
-        if f"{CLUSTER}-control-plane" not in nodes:
+        if (STATE / "cluster-creating").exists() or not (STATE / "kubeconfig").is_file():
+            down()
+            return
+        # An interrupted teardown can leave the worker behind.
+        if f"{CLUSTER}-control-plane" not in run(["kind", "get", "nodes", "--name", CLUSTER]).splitlines():
             down()
 
 
@@ -567,7 +574,7 @@ def up():
     with step("Prepare the Loco CLIs and verify the application configuration"):
         prepare()
         validate()
-    clear_interrupted_teardown()
+    clear_interrupted_lifecycle()
     if cluster_exists():
         if not owns_infrastructure():
             raise RuntimeError(f"{CLUSTER} already exists. Run mise run down from the checkout that owns it.")
@@ -582,9 +589,12 @@ def up():
     write_yaml(STATE / "owner.yaml", {"root": str(ROOT)})
     INFRA_STARTED = True
     with step("Create kind cluster"):
+        creating = STATE / "cluster-creating"
+        creating.touch()
         run(["kind", "create", "cluster", "--name", CLUSTER, "--image", VERSIONS["kindImage"],
              "--config", CONFIG / "kind.yaml", "--kubeconfig", STATE / "kubeconfig"],
             timeout=READY_SECONDS, log=OUT / "kind.log", stream=True)
+        creating.unlink()
     start_fixtures()
     install_loco()
     print(f"Loco is running. Dashboard: {WEB_URL} ({DEMO_EMAIL} / {DEMO_PASSWORD})", flush=True)
@@ -1195,6 +1205,22 @@ def main():
     args = parser.parse_args()
     if args.loco and args.command != "prepare":
         parser.error("--loco applies only to prepare")
+    if args.command in {"up", "down", "e2e"}:
+        CACHE.mkdir(exist_ok=True)
+        with (CACHE / "lifecycle.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                print("A demo up, down, or e2e task is already running in this checkout.", file=sys.stderr)
+                return 1
+            try:
+                return run_command(args)
+            except KeyboardInterrupt:
+                return 130
+    return run_command(args)
+
+
+def run_command(args):
     STATE.mkdir(exist_ok=True)
     OUT.mkdir(exist_ok=True)
     if args.command == "e2e":

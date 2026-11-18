@@ -1,6 +1,7 @@
 import io
 import json
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import unittest
@@ -50,6 +51,7 @@ class InstallationTests(unittest.TestCase):
 
     def test_e2e_failed_deploy_skips_verification(self):
         with patch.object(sys, "argv", ["demo.py", "e2e", "--keep"]), \
+                patch.object(demo, "CACHE", self.state), \
                 patch.object(demo, "OUT", self.state), patch.object(demo, "record", return_value=True), \
                 patch.object(demo, "RESULTS", [{"status": "FAIL"}]), \
                 patch.object(demo, "deploy", return_value=False), patch.object(demo, "verify") as verify, \
@@ -68,30 +70,44 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse((self.state / "identity.json").exists())
             self.assertFalse((self.state / "home").exists())
             self.assertTrue((self.state / "owner.yaml").exists())
+            self.assertTrue((self.state / "cluster-creating").exists())
             return ""
 
         with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
                 patch.object(demo, "run", side_effect=create_cluster), patch.object(demo, "start_fixtures"), \
                 patch.object(demo, "install_loco"), patch.object(demo, "INFRA_STARTED", False):
             demo.up()
+        self.assertFalse((self.state / "cluster-creating").exists())
 
     def test_existing_cluster_does_not_clear_state(self):
         identity = self.state / "identity.json"
         identity.write_text("existing-workspace")
-        with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
-                patch.object(demo, "run", return_value=demo.CLUSTER):
-            with self.assertRaisesRegex(RuntimeError, "already exists"):
-                demo.up()
-        self.assertEqual(identity.read_text(), "existing-workspace")
+        for owned in (False, True):
+            with self.subTest(owned=owned):
+                if owned:
+                    demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
+                    (self.state / "kubeconfig").touch()
 
-    def test_up_recovers_owned_partial_teardown(self):
-        for interrupted in (False, True):
-            with self.subTest(interrupted=interrupted):
+                with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
+                        patch.object(demo, "cluster_exists", return_value=True), \
+                        patch.object(demo, "fixture_containers", return_value=set()), \
+                        patch.object(demo, "run", return_value=f"{demo.CLUSTER}-control-plane"), \
+                        patch.object(demo, "down") as down:
+                    with self.assertRaisesRegex(RuntimeError, "already exists"):
+                        demo.up()
+                down.assert_not_called()
+                self.assertEqual(identity.read_text(), "existing-workspace")
+
+    def test_up_recovers_owned_partial_cluster(self):
+        for phase in ("worker left behind", "interrupted deletion", "interrupted creation"):
+            with self.subTest(phase=phase):
                 self.state.mkdir(exist_ok=True)
                 demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
                 (self.state / "identity.json").write_text("stale-workspace")
-                nodes = [f"{demo.CLUSTER}-worker"]
-                if interrupted:
+                (self.state / "kubeconfig").touch()
+                starting = phase == "interrupted creation"
+                nodes = [] if starting else [f"{demo.CLUSTER}-worker"]
+                if phase == "interrupted deletion":
                     nodes.append(f"{demo.CLUSTER}-control-plane")
 
                 def run(args, **kwargs):
@@ -106,10 +122,15 @@ class InstallationTests(unittest.TestCase):
                                 raise RuntimeError("kind deletion interrupted")
                             nodes.clear()
                         case ["kind", "create", "cluster"]:
+                            nonlocal starting
                             self.assertFalse(nodes)
                             self.assertFalse((self.state / "identity.json").exists())
                             self.assertFalse(demo.teardown_pending())
                             nodes.append(f"{demo.CLUSTER}-control-plane")
+                            args[-1].touch()
+                            if starting:
+                                starting = False
+                                raise KeyboardInterrupt
                         case ["docker", "ps", "-a"]:
                             return ""
                         case _:
@@ -119,13 +140,30 @@ class InstallationTests(unittest.TestCase):
                         patch.object(demo, "run", side_effect=run), patch.object(demo, "compose"), \
                         patch.object(demo, "start_fixtures"), patch.object(demo, "install_loco") as install, \
                         patch.object(demo, "INFRA_STARTED", False):
-                    if interrupted:
+                    if phase == "interrupted deletion":
                         with self.assertRaisesRegex(RuntimeError, "kind deletion interrupted"):
                             demo.down()
                         self.assertTrue(demo.teardown_pending())
                         self.assertTrue(demo.owns_infrastructure())
+                    elif starting:
+                        with self.assertRaises(KeyboardInterrupt):
+                            demo.up()
+                        self.assertTrue((self.state / "kubeconfig").is_file())
+                        self.assertTrue((self.state / "cluster-creating").exists())
                     demo.up()
+                    self.assertFalse((self.state / "cluster-creating").exists())
                 install.assert_called_once()
+
+    def test_interrupt_kills_streamed_process_group(self):
+        with patch.object(demo.subprocess, "Popen") as popen, patch.object(demo.os, "killpg") as kill:
+            process = popen.return_value.__enter__.return_value
+            process.stdout = ["started\n"]
+            process.wait.side_effect = [KeyboardInterrupt, 0]
+            with self.assertRaises(KeyboardInterrupt):
+                demo.run(["kind"], stream=True, log=self.state / "kind.log")
+        kill.assert_called_once_with(process.pid, signal.SIGKILL)
+        self.assertEqual(process.wait.call_count, 2)
+        self.assertEqual((self.state / "kind.log").read_text(), "started\n")
 
     def test_deploy_checks_api_before_using_saved_credentials(self):
         demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
