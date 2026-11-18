@@ -2,7 +2,8 @@ global:
   region: us-east-1
   domain:
     apps:
-    - apps.loco-demo.localhost
+    - loco-demo-apps.localhost
+    platform: loco-demo.localhost
   exporter:
     endpoint: http://ingest.loco-demo.localhost
 env:
