@@ -34,13 +34,13 @@ The demo supplies these external services as Docker containers next to the kind 
 
 The fixture credentials are in [`config/inputs.yaml`](config/inputs.yaml). The runner uses them for the API environment, registry push/pull Secrets and OpenBao snapshots. The API, dashboard and OTLP ingest listen on `api`, `console` and `ingest.loco-demo.localhost` through the control-plane Gateway.
 
-The worker Gateway uses `*.platform.loco-demo.localhost` for platform routes and `*.apps.loco-demo.localhost` for application routes.
+Loco advertises `loco-demo-apps.localhost` as the platform domain for application hostnames. The worker Gateway serves those hostnames on local HTTP port `8080` and reserves `*.loco-demo.localhost` for worker infrastructure routes.
 
 On the host, every `*.localhost` name resolves to `127.0.0.1`, where kind and Docker publish the API, Dex and storage ports. Inside the cluster, CoreDNS resolves the same names to the fixtures and to [`config/gateway.yaml`](config/gateway.yaml).
 
 ## Run locally
 
-Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 15000, 15556 and 19000 on `127.0.0.1` must be free. Then run:
+Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 8080, 15000, 15556 and 19000 on `127.0.0.1` must be free. Then run:
 
 ```sh
 git clone https://github.com/team-loco/demo.git
@@ -73,6 +73,8 @@ export HOME=$PWD/.state/home LOCO_CREDENTIAL_STORE=file
 ```
 
 Open `http://console.loco-demo.localhost` and sign in as `demo@example.test` with password `demo-password` to see the shop in the dashboard.
+
+Open the storefront at [shop.loco-demo-apps.localhost:8080](http://shop.loco-demo-apps.localhost:8080/) after deployment. The port binds to loopback. Kind sets the port mapping when it creates the cluster, so a cluster created before this change needs to be recreated to serve the storefront.
 
 To browse Astronomy Shop after deployment, run this from the demo directory and leave it running:
 

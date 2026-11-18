@@ -39,6 +39,7 @@ CONTROL_PLANE = yaml.safe_load((VALUES / "loco-control-plane.yaml").read_text())
 WORKER = yaml.safe_load((VALUES / "loco-worker.yaml").read_text())
 API_URL = WORKER["env"]["CONTROL_PLANE_URL"]
 WEB_URL = CONTROL_PLANE["api"]["env"]["WEB_URL"]
+SHOP_URL = f"http://{SERVICES['frontend-proxy']['domains'][0]}:8080"
 AUTH = json.loads(CONTROL_PLANE["api"]["env"]["AUTH_ISSUERS"])[0]
 REGION = WORKER["global"]["region"]
 CLUSTER = "loco-demo"
@@ -1083,9 +1084,22 @@ def check_observability_scope():
         api("loco.workspace.v1.WorkspaceService/DeleteWorkspace", {"workspaceId": other_workspace})
 
 
+def check_storefront():
+    def ready():
+        with urllib.request.urlopen(SHOP_URL, timeout=5) as response:
+            if response.headers.get_content_type() != "text/html":
+                return False
+        with urllib.request.urlopen(SHOP_URL + "/api/products", timeout=5) as response:
+            return bool(json.load(response))
+
+    wait_for("storefront through the worker Gateway", ready, READY_SECONDS)
+    return SHOP_URL
+
+
 def verify():
     ids = resources()
     check_health(ids)
+    record("storefront", check_storefront)
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
         record("logs-api", check_logs)

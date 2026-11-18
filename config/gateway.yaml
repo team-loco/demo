@@ -11,3 +11,17 @@ spec:
     gateway.envoyproxy.io/owning-gateway-name: loco-control-plane
   ports:
     - {name: http, port: 80, targetPort: 10080, nodePort: 30080}
+---
+# Exposes the worker Gateway on the storefront port.
+apiVersion: v1
+kind: Service
+metadata: {name: loco-demo-app-gateway, namespace: loco-system}
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/managed-by: envoy-gateway
+    app.kubernetes.io/component: proxy
+    gateway.envoyproxy.io/owning-gateway-namespace: loco-system
+    gateway.envoyproxy.io/owning-gateway-name: eg
+  ports:
+    - {name: http, port: 80, targetPort: 10080, nodePort: 30081}
