@@ -1,9 +1,12 @@
+import io
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import urllib.error
+import urllib.parse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import demo
@@ -80,6 +83,48 @@ class InstallationTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "already exists"):
                 demo.up()
         self.assertEqual(identity.read_text(), "existing-workspace")
+
+    def test_checkout_recovers_when_failed_response_already_consumed_cart(self):
+        carts, attempts = {}, []
+
+        def frontend(request, timeout):
+            path = urllib.parse.urlparse(request.full_url).path
+            data = json.loads(request.data) if request.data else None
+            if path in ["/api/products", "/api/recommendations"]:
+                response = [{"id": "product"}]
+            elif path == "/api/cart":
+                carts[data["userId"]] = [data["item"]]
+                response = {"items": carts[data["userId"]]}
+            elif path == "/api/checkout":
+                attempts.append(data["userId"])
+                items = carts.pop(data["userId"], [])
+                if not items:
+                    raise urllib.error.HTTPError(request.full_url, 400, "empty cart", {}, io.BytesIO())
+                if len(attempts) == 1:
+                    raise urllib.error.HTTPError(request.full_url, 500, "connection dropped after order", {}, io.BytesIO())
+                response = {"orderId": "verified-order"}
+            else:
+                self.fail(f"Unexpected frontend request: {path}")
+            return io.BytesIO(json.dumps(response).encode())
+
+        def wait(name, predicate, seconds):
+            for _ in range(2):
+                try:
+                    if predicate():
+                        return
+                except demo.RETRYABLE as error:
+                    if isinstance(error, urllib.error.HTTPError):
+                        error.close()
+            raise RuntimeError(f"{name} did not recover")
+
+        with patch.object(demo, "OUT", self.state), patch.object(demo, "payment_counter", return_value=(0, None)), \
+                patch.object(demo, "app_namespace", return_value="workloads"), patch.object(demo.subprocess, "Popen") as proc, \
+                patch.object(demo.urllib.request, "urlopen", side_effect=frontend), patch.object(demo, "wait_for", side_effect=wait):
+            self.assertIn("verified-order", demo.traffic())
+        self.assertEqual(len(attempts), 2)
+        self.assertNotEqual(*attempts)
+        self.assertEqual(json.loads((self.state / "order.json").read_text())["orderId"], "verified-order")
+        proc.return_value.terminate.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -827,7 +827,6 @@ def check_health(ids):
 def traffic():
     baseline, _ = payment_counter()
     (STATE / "metric-baseline.json").write_text(json.dumps({"value": baseline}))
-    user_id = "demo-" + uuid.uuid4().hex
     port = 18080
     log = (OUT / "frontend-forward.log").open("w")
     proc = subprocess.Popen(["kubectl", "--kubeconfig", str(STATE / "kubeconfig"), "--context", CONTEXT,
@@ -844,18 +843,19 @@ def traffic():
     try:
         wait_for("frontend port forward", lambda: request("/api/products"), seconds=30)
         products = request("/api/products")
-        cart = request("/api/cart", {"userId": user_id, "item": {"productId": products[0]["id"], "quantity": 1}})
-        if not cart.get("items"):
-            raise RuntimeError("Add-to-cart response contains no items")
-        person = {**CUSTOMER, "userId": user_id}
         if not request("/api/recommendations?currencyCode=USD"):
             raise RuntimeError("Recommendation service returned no products")
         order = {}
         def checkout():
+            user_id = "demo-" + uuid.uuid4().hex
+            cart = request("/api/cart", {"userId": user_id, "item": {"productId": products[0]["id"], "quantity": 1}})
+            if not cart.get("items"):
+                raise RuntimeError("Add-to-cart response contains no items")
+            person = {**CUSTOMER, "userId": user_id}
             trace_id = secrets.token_hex(16)
             order.update(request("/api/checkout?currencyCode=USD", person, trace_id), traceId=trace_id)
             return bool(order.get("orderId"))
-        # Payment connects to flagd on its first charge and can miss that request's deadline.
+        # A failed response can follow a completed order that already emptied its cart.
         wait_for("checkout", checkout, seconds=60)
         (STATE / "order.json").write_text(json.dumps(order))
         result = {"orderId": order["orderId"], "traceId": order["traceId"]}
@@ -1038,6 +1038,7 @@ def diagnostics():
     if (STATE / "kubeconfig").exists():
         for args, name in [
             (["get", "pods", "-A", "-o", "wide"], "pods"),
+            (["get", "pods", "-A", "-o", "json"], "pod-status"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),
             (["get", "kustomizations.kustomize.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io", "-A"], "flux"),
             (["get", "applications", "-A", "-o", "yaml"], "applications"),
