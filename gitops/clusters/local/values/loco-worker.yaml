@@ -3,6 +3,7 @@ global:
   domain:
     apps:
     - apps.loco-demo.localhost
+    platform: platform.loco-demo.localhost
   exporter:
     endpoint: http://ingest.loco-demo.localhost
 env:
