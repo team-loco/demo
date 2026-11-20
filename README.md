@@ -83,8 +83,8 @@ The runner creates its own `loco-demo` kind cluster and uses its own kubeconfig.
 | Installation | Flux reconciles the control plane and worker; `locoadm` signs in the configured admin, delivers the join token, and reports enrollment and a heartbeat with no unclaimed admins. |
 | Deployments | All 16 services deploy and every resource reports healthy. |
 | Storefront | The local Gateway serves the shop page and product catalog. |
-| Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
-| Logs | `QueryLogs` returns the checkout order from SDK-pushed OTLP logs. |
+| Application behavior | The runner browses the shop, adds to the cart and checks out. |
+| Logs | `QueryLogs` returns logs scoped to the frontend resource. |
 | Metrics | `QueryMetrics` reports the payment transaction counter increasing after checkout. |
 | Traces | `GetTrace` returns a connected checkout trace across frontend, checkout, product-catalog, payment and shipping. |
 | Access control | A token scoped to the demo workspace cannot query another workspace's logs, metrics or traces. |
