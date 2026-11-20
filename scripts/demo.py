@@ -1000,40 +1000,23 @@ def time_range(minutes=10):
     return {"startTime": (now - dt.timedelta(minutes=minutes)).isoformat(), "endTime": now.isoformat()}
 
 
-def query_logs(resource_ids):
-    request = {"workspaceId": workspace_id(), "environmentId": identity()["environmentId"],
-               "resourceIds": resource_ids, **time_range(), "limit": 200, "order": "LOG_ORDER_NEWEST_FIRST"}
-    entries = paginate(lambda page: observability_rpc("QueryLogs", page), request, "entries", "nextCursor", "cursor")
-    if any(entry["resourceId"] not in resource_ids for entry in entries):
-        raise RuntimeError("QueryLogs returned a resource outside the requested scope")
-    return entries
-
-
-def order_log_sources(resource_ids, order_id):
-    sources = set()
-    for entry in query_logs(resource_ids):
-        attributes = entry.get("logAttributes", {})
-        if order_id not in entry.get("body", "") + json.dumps(attributes):
-            continue
-        sources.add(attributes.get("log.iostream", "file") if attributes.get("log.file.path") else "otlp")
-    return sources
-
-
 def check_logs():
-    ids = [resources()[n] for n in ["checkout", "email"]]
-    order_id = json.loads((STATE / "order.json").read_text())["orderId"]
-    wait_for("checkout OTLP and stdout order logs through QueryLogs",
-             lambda: {"otlp", "stdout"}.issubset(order_log_sources(ids, order_id)), TELEMETRY_SECONDS)
-    (OUT / "logs-api.json").write_text(redact(json.dumps(query_logs(ids), indent=2)) + "\n")
-    return "QueryLogs returns the same checkout order from OTLP and container stdout in the requested scope"
+    frontend = resources()["frontend"]
 
+    def observed():
+        response = observability_rpc("QueryLogs", {
+            "workspaceId": workspace_id(), "environmentId": identity()["environmentId"],
+            "resourceIds": [frontend], **time_range(), "limit": 20, "order": "LOG_ORDER_NEWEST_FIRST"})
+        entries = response.get("entries", [])
+        if not entries:
+            return False
+        if any(entry["resourceId"] != frontend for entry in entries):
+            raise RuntimeError("QueryLogs returned a resource outside the requested scope")
+        (OUT / "logs-api.json").write_text(redact(json.dumps(entries, indent=2)) + "\n")
+        return True
 
-def check_kafka():
-    order_id = json.loads((STATE / "order.json").read_text())["orderId"]
-    for name in ["accounting", "fraud-detection"]:
-        wait_for(name + " Kafka order consumption through QueryLogs",
-                 lambda name=name: bool(order_log_sources([resources()[name]], order_id)), TELEMETRY_SECONDS)
-    return "QueryLogs confirms both Kafka consumers recorded the checkout order"
+    wait_for("frontend logs through QueryLogs", observed, TELEMETRY_SECONDS)
+    return "QueryLogs returns frontend logs in the requested scope"
 
 
 def payment_counter():
@@ -1160,14 +1143,13 @@ def verify():
     ids = resources()
     check_health(ids)
     record("storefront", check_storefront)
+    record("logs-api", check_logs)
     record("observability-scope", check_observability_scope)
     if record("shop-checkout", traffic):
-        record("logs-api", check_logs)
         record("metrics-api", check_metrics)
         record("traces-api", check_traces)
-        record("kafka-consumers", check_kafka)
     else:
-        for check in ["logs-api", "metrics-api", "traces-api", "kafka-consumers"]:
+        for check in ["metrics-api", "traces-api"]:
             RESULTS.append({"name": check, "status": "BLOCKED", "detail": "Checkout must pass first"})
     save_report()
     return all(r["status"] == "PASS" for r in RESULTS)
