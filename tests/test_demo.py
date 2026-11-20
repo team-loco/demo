@@ -23,6 +23,17 @@ class InstallationTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_record_resources_uses_the_file_key_for_a_renamed_service(self):
+        status = {"resource": {"id": "frontend-id", "slug": "frontend", "name": "Astronomy Storefront"}}
+        (self.state / "identity.json").write_text(json.dumps({"orgId": "demo-org", "workspaceId": "demo-workspace"}))
+        with patch.object(demo, "SERVICES", {"frontend": {}}), \
+                patch.object(demo, "loco", return_value=json.dumps(status)) as loco:
+            demo.record_resources()
+
+        loco.assert_called_once_with("resource", "status", "frontend", "--output", "json", "--host", demo.API_URL,
+                                     "--org", "demo-org", "--workspace", "demo-workspace")
+        self.assertEqual(demo.resources(), {"frontend": "frontend-id"})
+
     def test_reload_rejects_edited_applied_migration_before_building(self):
         checkout = Path(self.temp.name) / "core"
         migrations = checkout / demo.MIGRATION_DIR

@@ -726,24 +726,6 @@ def api(procedure, data, token=None):
     return rpc(procedure, data, token or session_token())
 
 
-def paginate(fetch, request, key, next_field="nextPageToken", cursor_field="pageToken"):
-    records, seen, request = [], set(), dict(request)
-    while True:
-        response = fetch(request)
-        records.extend(response.get(key, []))
-        cursor = response.get(next_field)
-        if not cursor:
-            return records
-        if cursor in seen:
-            raise RuntimeError(f"{key}: repeated pagination cursor")
-        seen.add(cursor)
-        request[cursor_field] = cursor
-
-
-def list_api(procedure, request, key):
-    return paginate(lambda page: api(procedure, page), request, key)
-
-
 def created_id(output):
     match = re.search(r"ID: ([0-9a-f-]{36})", output)
     if not match:
@@ -775,9 +757,12 @@ def create_workspace():
 
 
 def record_resources():
-    listed = list_api("loco.resource.v1.ResourceService/ListWorkspaceResources",
-                      {"workspaceId": workspace_id(), "pageSize": 200}, "resources")
-    ids = {resource["name"]: resource["id"] for resource in listed if resource["name"] in SERVICES}
+    scope = identity()
+    ids = {}
+    for slug in SERVICES:
+        status = json.loads(loco("resource", "status", slug, "--output", "json", "--host", API_URL,
+                                 "--org", scope["orgId"], "--workspace", scope["workspaceId"]))
+        ids[slug] = status["resource"]["id"]
     (STATE / "resources.json").write_text(json.dumps(ids, indent=2))
 
 
