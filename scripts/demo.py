@@ -484,7 +484,24 @@ def flux(*args, **kwargs):
     return run(["flux", "--kubeconfig", STATE / "kubeconfig", "--context", CONTEXT, *args], **kwargs)
 
 
+def tune_flux_dependency_retries():
+    deploy = ("-n", "flux-system", "deployment/kustomize-controller")
+    controller = json.loads(kube("get", *deploy, "-o", "json"))
+    containers = controller["spec"]["template"]["spec"]["containers"]
+    manager = next(container for container in containers if container["name"] == "manager")
+    args = manager["args"]
+    if any(arg.partition("=")[0] == "--requeue-dependency" for arg in args):
+        return
+    # Flux otherwise waits 30 seconds before rechecking each blocked dependency.
+    patch = {"spec": {"template": {"spec": {"containers": [
+        {"name": "manager", "args": [*args, "--requeue-dependency=2s"]},
+    ]}}}}
+    kube("patch", *deploy, "--type=strategic", "--patch", json.dumps(patch))
+    kube("rollout", "status", *deploy, "--timeout=120s", timeout=130)
+
+
 def publish_gitops(bundle, entry):
+    tune_flux_dependency_retries()
     repo = STATE / "gitops"
     source = repo / "releases/control-plane.yaml"
     doc = next(yaml.safe_load_all(source.read_text()))
@@ -516,13 +533,12 @@ def publish_gitops(bundle, entry):
     kube("apply", "-f", "-", input=source + root)
     flux("reconcile", "source", "oci", "demo-config")
     flux("reconcile", "kustomization", "demo-config")
-    flux("reconcile", "source", "oci", "platform-bundle")
-    layers = ["loco", "loco-namespaces", "loco-crds", "loco-infra", "loco-cluster-config", "loco-control-plane"]
     if entry == "./all":
-        layers.append("loco-worker")
-    for layer in layers:
-        flux("reconcile", "kustomization", layer, "--timeout=10m", timeout=READY_SECONDS + 60,
-             log=OUT / ("flux-" + layer + ".log"), stream=True)
+        flux("reconcile", "kustomization", "loco-cluster-config", "--timeout=10m", timeout=READY_SECONDS + 60,
+             log=OUT / "flux-loco-cluster-config.log", stream=True)
+    # The parent waits for the bundle's child Kustomizations to become ready.
+    flux("reconcile", "kustomization", "loco", "--with-source", "--timeout=10m", timeout=READY_SECONDS + 60,
+         log=OUT / "flux-loco.log", stream=True)
 
 
 def initialize_gitops(bundle):
