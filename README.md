@@ -84,7 +84,7 @@ The runner creates its own `loco-demo` kind cluster and uses its own kubeconfig.
 | Deployments | All 16 services deploy and every resource reports healthy. |
 | Storefront | The local Gateway serves the shop page and product catalog. |
 | Application behavior | The runner browses the shop, adds to the cart and checks out; both Kafka consumers record the order. |
-| Logs | `QueryLogs` returns the checkout order from both SDK-pushed OTLP logs and container stdout. |
+| Logs | `QueryLogs` returns the checkout order from SDK-pushed OTLP logs. |
 | Metrics | `QueryMetrics` reports the payment transaction counter increasing after checkout. |
 | Traces | `GetTrace` returns a connected checkout trace across frontend, checkout, product-catalog, payment and shipping. |
 | Access control | A token scoped to the demo workspace cannot query another workspace's logs, metrics or traces. |

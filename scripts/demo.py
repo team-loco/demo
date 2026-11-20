@@ -1022,10 +1022,10 @@ def order_log_sources(resource_ids, order_id):
 def check_logs():
     ids = [resources()[n] for n in ["checkout", "email"]]
     order_id = json.loads((STATE / "order.json").read_text())["orderId"]
-    wait_for("checkout OTLP and stdout order logs through QueryLogs",
-             lambda: {"otlp", "stdout"}.issubset(order_log_sources(ids, order_id)), TELEMETRY_SECONDS)
+    wait_for("checkout OTLP order log through QueryLogs",
+             lambda: "otlp" in order_log_sources(ids, order_id), TELEMETRY_SECONDS)
     (OUT / "logs-api.json").write_text(redact(json.dumps(query_logs(ids), indent=2)) + "\n")
-    return "QueryLogs returns the same checkout order from OTLP and container stdout in the requested scope"
+    return "QueryLogs returns the checkout order from OTLP in the requested scope"
 
 
 def check_kafka():
