@@ -23,6 +23,28 @@ class InstallationTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_create_workspace_uses_the_demo_users_starter_org(self):
+        replies = [
+            {"user": {"id": "demo-user"}},
+            {"orgs": [{"id": "new-org", "createdBy": "demo-user"}], "nextPageToken": "next"},
+            {"orgs": [{"id": "starter-org", "createdBy": "demo-user"},
+                      {"id": "invited-org", "createdBy": "another-user"}]},
+            {"workspaceId": "shop"},
+            {"environments": [{"id": "production-id", "name": "production"}]},
+            {"token": "demo-telemetry-token"},
+        ]
+        with patch.object(demo, "OUT", self.state), patch.object(demo, "api", side_effect=replies) as api, \
+                patch.object(demo, "loco") as loco:
+            demo.create_workspace()
+
+        self.assertEqual(api.call_args_list[2].args[1]["pageToken"], "next")
+        self.assertEqual(api.call_args_list[3].args, (
+            "loco.workspace.v1.WorkspaceService/CreateWorkspace",
+            {"orgId": "starter-org", "name": "astronomy-shop"},
+        ))
+        loco.assert_called_once_with("use", "starter-org/shop")
+        self.assertEqual(demo.identity()["orgId"], "starter-org")
+
     def test_record_resources_uses_the_file_key_for_a_renamed_service(self):
         status = {"resource": {"id": "frontend-id", "slug": "frontend", "name": "Astronomy Storefront"}}
         (self.state / "identity.json").write_text(json.dumps({"orgId": "demo-org", "workspaceId": "demo-workspace"}))
