@@ -56,7 +56,7 @@ This leaves the demo running. Use `mise run down` when you are finished. To use 
 | `mise run validate` | Validates `loco.yaml` and the infrastructure-only upstream chart, and builds the GitOps cluster root and config with `kubectl kustomize`. |
 | `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
 | `mise run reload` | Rebuilds the selected Core source and updates the running demo in place while keeping the workspace and fixture data. |
-| `mise run deploy` | Creates the `demo` organization and `astronomy-shop` workspace, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
+| `mise run deploy` | Creates the `astronomy-shop` workspace in the organization created during login, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
 | `mise run verify` | Runs the checks below. |
 | `mise run test` | Runs the runner's regression tests. |
 | `mise run down` | Deletes the cluster and fixtures this checkout created. |

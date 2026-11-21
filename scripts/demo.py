@@ -726,18 +726,29 @@ def api(procedure, data, token=None):
     return rpc(procedure, data, token or session_token())
 
 
-def created_id(output):
-    match = re.search(r"ID: ([0-9a-f-]{36})", output)
-    if not match:
-        raise RuntimeError("The CLI did not report the created ID: " + output)
-    return match.group(1)
+def starter_org_id():
+    user_id = api("loco.user.v1.UserService/WhoAmI", {})["user"]["id"]
+    org_id, page_token = None, ""
+    while True:
+        page = api("loco.org.v1.OrgService/ListUserOrgs",
+                   {"userId": user_id, "pageSize": 200, "pageToken": page_token})
+        # The API lists newest first. The starter org predates any later org the demo user creates.
+        for org in page.get("orgs", []):
+            if org["createdBy"] == user_id:
+                org_id = org["id"]
+        page_token = page.get("nextPageToken")
+        if not page_token:
+            break
+    if org_id is None:
+        raise RuntimeError("The demo login did not create a starter organization.")
+    return org_id
 
 
 def create_workspace():
     if (STATE / "identity.json").exists():
         return
-    with step("Create the demo organization and workspace"):
-        org_id = created_id(loco("org", "create", "demo"))
+    with step("Create the workspace in the demo user's starter organization"):
+        org_id = starter_org_id()
         workspace = api("loco.workspace.v1.WorkspaceService/CreateWorkspace",
                         {"orgId": org_id, "name": "astronomy-shop"})
         ws_id = workspace["workspaceId"]
