@@ -18,6 +18,7 @@ api:
     LOCO_SOURCE_BUCKET_REGION: us-east-1
     LOCO_REGISTRY_HOST: registry.loco-demo.localhost:5000
     LOCO_REGISTRY_URL: http://registry.loco-demo.localhost:5000
+    OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://loco-api-otel.loco-system.svc:4318/v1/traces
 certManager:
   enabled: false
   issuer:
