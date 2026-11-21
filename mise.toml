@@ -21,6 +21,9 @@ run = "uv run --locked python scripts/demo.py validate"
 run = "uv run --locked python scripts/demo.py e2e"
 [tasks.up]
 run = "uv run --locked python scripts/demo.py up"
+[tasks.forward-https]
+description = "Forward localhost port 443 to the demo's app gateway"
+run = 'exec sudo "$(mise which kubectl)" --kubeconfig "$PWD/.state/kubeconfig" -n loco-system port-forward --address 127.0.0.1 svc/eg 443:443'
 [tasks.reload]
 description = "Rebuild Core and update the running demo in place"
 run = "uv run --locked python scripts/demo.py reload"
