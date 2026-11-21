@@ -1,5 +1,5 @@
 global:
-  region: us-east-1
+  region: local-1
   domain:
     apps:
     - loco-demo-apps.localhost

@@ -13,7 +13,7 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 192Mi
         replicas:
@@ -35,7 +35,7 @@ services:
       OTEL_LOGS_EXPORTER: otlp
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 384Mi
         replicas:
@@ -56,7 +56,7 @@ services:
       VALKEY_ADDR: valkey-cart:6379
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 192Mi
         replicas:
@@ -83,7 +83,7 @@ services:
       SHIPPING_ADDR: http://shipping:50050
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 64Mi
         replicas:
@@ -104,7 +104,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 64Mi
         replicas:
@@ -124,7 +124,7 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 128Mi
         replicas:
@@ -144,7 +144,7 @@ services:
       OTEL_INSTRUMENTATION_MESSAGING_EXPERIMENTAL_RECEIVE_TELEMETRY_ENABLED: 'true'
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 384Mi
         replicas:
@@ -176,7 +176,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 256m
         memory: 256Mi
         replicas:
@@ -226,7 +226,7 @@ services:
       OTEL_TRACES_SAMPLER: always_on
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
-      us-east-1:
+      local-1:
         cpu: 256m
         memory: 64Mi
         replicas:
@@ -249,7 +249,7 @@ services:
       OTEL_TRACES_SAMPLER: always_on
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 128Mi
         replicas:
@@ -287,7 +287,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 256m
         memory: 128Mi
         replicas:
@@ -313,7 +313,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 128Mi
         replicas:
@@ -337,7 +337,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 64Mi
         replicas:
@@ -357,7 +357,7 @@ services:
       QUOTE_PORT: '8090'
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 128Mi
         replicas:
@@ -382,7 +382,7 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-col-deploy.loco-obs.svc.cluster.local:4317
       OTEL_EXPORTER_OTLP_PROTOCOL: grpc
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 128Mi
         replicas:
@@ -401,7 +401,7 @@ services:
       SHIPPING_PORT: '50050'
       OTEL_TRACES_SAMPLER: always_on
     regions:
-      us-east-1:
+      local-1:
         cpu: 100m
         memory: 64Mi
         replicas:
