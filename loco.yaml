@@ -2,8 +2,6 @@ version: 1
 partial: astronomy-shop
 services:
   accounting:
-    runAsUser: 1654
-    runAsGroup: 1654
     env:
       DB_CONNECTION_STRING: Host=astronomy-db;Username=astronomy_user;Password=astronomy_password;Database=astronomy_db
       KAFKA_ADDR: kafka:9092
@@ -21,8 +19,6 @@ services:
           max: 1
     image: ghcr.io/open-telemetry/demo:3.1.0-accounting@sha256:bfd9d13ac58a4eb5eb5130aa9ac1920686e2214030f4f2ab8bf178121879fcd9
   ad:
-    runAsUser: 1000
-    runAsGroup: 1000
     port: 9555
     env:
       AD_PORT: '9555'
@@ -43,8 +39,6 @@ services:
           max: 1
     image: ghcr.io/open-telemetry/demo:3.1.0-ad@sha256:dfd7a4697116d7f961f2c6e8be1bd187f2af7555d6d4138c016097921d7c7ed0
   cart:
-    runAsUser: 1654
-    runAsGroup: 1654
     port: 7070
     env:
       ASPNETCORE_URLS: http://*:7070
@@ -91,8 +85,6 @@ services:
           max: 1
     image: ghcr.io/open-telemetry/demo:3.1.0-checkout@sha256:d4448ff541290fc57cca71d4bfd35d522959edf62a8bb55158467583f9fad4e2
   currency:
-    runAsUser: 65534
-    runAsGroup: 65534
     port: 7001
     env:
       CURRENCY_PORT: '7001'
@@ -112,8 +104,6 @@ services:
           max: 1
     image: ghcr.io/open-telemetry/demo:3.1.0-currency@sha256:ba65e72d5841f909e0ee09498572092923f59e249ae4bf084ab63a82b33811c1
   email:
-    runAsUser: 65534
-    runAsGroup: 65534
     port: 6060
     env:
       APP_ENV: production
@@ -190,8 +180,6 @@ services:
       startupGracePeriod: 60
     image: ghcr.io/open-telemetry/demo:3.1.0-frontend@sha256:28358db4620686eda30dfabfc770b9ff0db73819ebac0895064271b446110289
   frontend-proxy:
-    runAsUser: 101
-    runAsGroup: 101
     port: 8080
     env:
       CHATBOT_HOST: chatbot
@@ -263,8 +251,6 @@ services:
       startupGracePeriod: 60
     image: ghcr.io/open-telemetry/demo:3.1.0-image-provider@sha256:46d1a7e95109c0064122ca0bfb49cd05191fb90a6264b6be508e0d98f2c963f1
   load-generator:
-    runAsUser: 65534
-    runAsGroup: 65534
     port: 8089
     env:
       FLAGD_HOST: flagd
@@ -345,8 +331,6 @@ services:
           max: 1
     image: ghcr.io/team-loco/demo/product-catalog@sha256:68a784b0ebe3be107fd58a8f8a328bfb2b2a7074c39b8b09541085ae10a1f806
   quote:
-    runAsUser: 82
-    runAsGroup: 82
     port: 8090
     env:
       IPV6_ENABLED: 'false'
@@ -365,8 +349,6 @@ services:
           max: 1
     image: ghcr.io/open-telemetry/demo:3.1.0-quote@sha256:e0b1ab3784fdbf0112521d3c5c733643f1cefa4eef5f592f845977465400181e
   recommendation:
-    runAsUser: 65534
-    runAsGroup: 65534
     port: 9001
     env:
       FLAGD_HOST: flagd
