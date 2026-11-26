@@ -38,3 +38,5 @@ openbao:
       bucket: loco-backups
       existingSecret:
         name: loco-inputs
+platformTelemetry:
+  enabled: true

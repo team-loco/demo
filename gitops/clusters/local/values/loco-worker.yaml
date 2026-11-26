@@ -1,4 +1,9 @@
 global:
+  platformTelemetry:
+    enabled: true
+    installation: loco-demo
+    cluster: local
+    environment: development
   region: local-1
   domain:
     apps:
