@@ -32,11 +32,5 @@ services:
     volumes: [./dex.yaml:/etc/dex/config.yaml:ro]
     ports: ["127.0.0.1:15556:15556"]
     networks: [kind]
-  aspire:
-    image: mcr.microsoft.com/aspire/dashboard@sha256:69b9b095610997cc2b5a3c265acd5c9f8d6b6b5040ef8cfdccc8a66efff0252d
-    container_name: loco-demo-aspire
-    environment: {ASPIRE_DASHBOARD_UNSECURED_ALLOW_ANONYMOUS: "true"}
-    ports: ["127.0.0.1:18888:18888"]
-    networks: [kind]
 networks:
   kind: {external: true}

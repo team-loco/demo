@@ -3,5 +3,4 @@ kind: Kustomization
 resources:
 - api-env.yaml
 - openbao-seal.yaml
-- otel-collector.yaml
 ---

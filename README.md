@@ -38,7 +38,7 @@ On the host, every `*.localhost` name resolves to `127.0.0.1`, where kind and Do
 
 ## Run locally
 
-Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 8080, 15000, 15556, 18888 and 19000 on `127.0.0.1` must be free. Then run:
+Install [mise](https://mise.jdx.dev/) and start Docker. Ports 80, 8080, 15000, 15556 and 19000 on `127.0.0.1` must be free. Then run:
 
 ```sh
 git clone https://github.com/team-loco/demo.git
@@ -74,7 +74,7 @@ Open `http://console.loco-demo.localhost` and sign in as `demo@example.test` wit
 
 Open the storefront at [shop.loco-demo-apps.localhost:8080](http://shop.loco-demo-apps.localhost:8080/) after deployment. The port binds to loopback. Kind sets the port mapping when it creates the cluster, so a cluster created before this change needs to be recreated to serve the storefront.
 
-The API's traces go to an [Aspire dashboard](http://127.0.0.1:18888/traces/resource/loco-api) at `127.0.0.1:18888`. The API exports them to an OpenTelemetry Collector in `loco-system` (`gitops/clusters/local/config/otel-collector.yaml`), which forwards them to the `loco-demo-aspire` container on the kind network. A request's trace lists the agent work it started, such as placement delivery, builds and rollout reports, under its server span's backlinks.
+Loco exports its own API and worker telemetry to the built-in observability proxy. Open [System observability](http://console.loco-demo.localhost/system/logs) as `demo@example.test` to inspect installation logs, metrics and traces. The chart manages collection and authentication; no external dashboard or extra collector is needed. This requires a Core version with native platform telemetry and the System observability UI.
 
 Run `mise run forward-https` in a separate terminal to use the demo app HTTPS URLs on port 443. The task uses `sudo` to bind the port and forwards requests to the worker Gateway until you stop it.
 

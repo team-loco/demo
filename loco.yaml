@@ -168,7 +168,7 @@ services:
       OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
       PORT: '8080'
       PRODUCT_CATALOG_ADDR: product-catalog:3550
-      PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://shop.loco-demo-apps.localhost:8080/otlp-http/v1/traces
+      PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: /otlp-http/v1/traces
       RECOMMENDATION_ADDR: recommendation:9001
       SHIPPING_ADDR: http://shipping:50050
       WEB_OTEL_SERVICE_NAME: frontend-web
