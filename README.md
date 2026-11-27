@@ -107,7 +107,7 @@ loco deploy --file loco.yaml --env production --yes --confirm-import
 
 Every service except product-catalog runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in `loco.yaml`. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
 
-Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Services whose images default to root or to a named user declare numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`.
+Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Loco preserves each image's declared user inside a Kubernetes user namespace; `loco.yaml` does not override user or group IDs.
 
 product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
 
