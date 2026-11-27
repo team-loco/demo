@@ -1,3 +1,4 @@
+import fcntl
 import io
 import json
 from pathlib import Path
@@ -225,6 +226,82 @@ class InstallationTests(unittest.TestCase):
                     demo.up()
                     self.assertFalse((self.state / "cluster-creating").exists())
                 install.assert_called_once()
+
+    def test_down_removes_demo_without_local_ownership_and_preserves_state(self):
+        for owner in (None, {"root": "/another/demo/checkout"}):
+            with self.subTest(owner=owner):
+                if owner:
+                    demo.write_yaml(self.state / "owner.yaml", owner)
+                (self.state / "identity.json").write_text("keep-local-state")
+                commands = []
+
+                def run(args, **kwargs):
+                    commands.append(args)
+                    if args[:3] == ["kind", "delete", "cluster"]:
+                        self.assertEqual(args[3:5], ["--name", "loco-demo"])
+                        self.assertNotEqual(args[-1], self.state / "kubeconfig")
+                        self.assertTrue(args[-1].parent.is_dir())
+                    return ""
+
+                with patch.object(demo, "cluster_exists", side_effect=[True, False]), \
+                        patch.object(demo, "fixture_containers", return_value=set()), \
+                        patch.object(demo, "run", side_effect=run), \
+                        patch.object(demo, "compose") as compose:
+                    demo.down()
+                compose.assert_called_once_with("down", "--volumes", "--remove-orphans", timeout=120)
+                self.assertEqual(len(commands), 1)
+                self.assertEqual((self.state / "identity.json").read_text(), "keep-local-state")
+                self.assertFalse(demo.teardown_pending())
+                if owner:
+                    self.assertEqual((self.state / "owner.yaml").read_text(), "root: /another/demo/checkout\n")
+
+    def test_down_removes_orphan_fixtures_without_cluster_or_state(self):
+        self.state.rmdir()
+        with patch.object(demo, "cluster_exists", return_value=False), \
+                patch.object(demo, "fixture_containers", side_effect=[{"loco-demo-old-fixture"}, set()]), \
+                patch.object(demo, "compose") as compose, patch.object(demo, "run"):
+            demo.down()
+        compose.assert_called_once_with("down", "--volumes", "--remove-orphans", timeout=120)
+        self.assertFalse(self.state.exists())
+
+    def test_down_reports_empty_context_only_after_discovery(self):
+        output = io.StringIO()
+        with patch.object(demo, "cluster_exists", return_value=False), \
+                patch.object(demo, "fixture_containers", return_value=set()), \
+                patch.object(demo, "compose") as compose, patch("sys.stdout", output):
+            demo.down()
+        compose.assert_not_called()
+        self.assertIn("No loco-demo cluster or demo fixtures found", output.getvalue())
+
+    def test_down_propagates_discovery_and_teardown_failures(self):
+        for failure in ("kind unavailable", "Docker unavailable", "fixtures remain", "cluster remains"):
+            with self.subTest(failure=failure):
+                demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
+                with patch.object(demo, "owns_infrastructure", return_value=failure != "kind unavailable"), \
+                        patch.object(demo, "compose"), \
+                        patch.object(demo, "run", return_value=""), \
+                        patch.object(demo, "cluster_exists", side_effect=RuntimeError(failure) if failure == "kind unavailable"
+                                     else lambda: failure == "cluster remains"), \
+                        patch.object(demo, "fixture_containers", side_effect=RuntimeError(failure) if failure == "Docker unavailable"
+                                     else lambda: {"loco-demo-postgres"} if failure == "fixtures remain" else set()):
+                    with self.assertRaises(RuntimeError):
+                        demo.down()
+                self.assertTrue(self.state.exists())
+                if failure != "kind unavailable":
+                    self.assertTrue(demo.teardown_pending())
+
+    def test_lifecycle_lock_blocks_other_checkouts(self):
+        lock_path = Path(self.temp.name) / "shared-lifecycle.lock"
+        with lock_path.open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for command in ("up", "down", "reload", "e2e"):
+                with self.subTest(command=command), \
+                        patch.object(demo, "LIFECYCLE_LOCK", lock_path), \
+                        patch.object(demo, "CACHE", self.state / command), \
+                        patch.object(sys, "argv", ["demo.py", command]), \
+                        patch.object(demo, "run_command") as run_command:
+                    self.assertEqual(demo.main(), 1)
+                    run_command.assert_not_called()
 
     def test_streamed_release_logs_progress_and_keeps_manifest_separate(self):
         log = self.state / "platform-release.log"
