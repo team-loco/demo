@@ -48,7 +48,7 @@ mise run setup
 mise run e2e -- --keep
 ```
 
-This leaves the demo running. Use `mise run down` when you are finished. To use a local core checkout, replace setup with `mise run setup -- --loco /path/to/core`.
+This leaves the demo running. Use `mise run down` when you are finished. It removes the demo cluster, fixture containers and their data, even when another checkout started them. To use a local core checkout, replace setup with `mise run setup -- --loco /path/to/core`.
 
 | Task | What it does |
 | --- | --- |
@@ -59,7 +59,7 @@ This leaves the demo running. Use `mise run down` when you are finished. To use 
 | `mise run deploy` | Creates the `astronomy-shop` workspace in the organization created during login, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
 | `mise run verify` | Runs the checks below. |
 | `mise run test` | Runs the runner's regression tests. |
-| `mise run down` | Deletes the cluster and fixtures this checkout created. |
+| `mise run down` | Deletes the `loco-demo` cluster and fixtures in the current Docker context, including those created from another checkout. |
 | `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
 | `mise run report` | Files failed checks as issues in `team-loco/loco`. |
 
