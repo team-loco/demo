@@ -595,10 +595,7 @@ def install_loco():
         publish_gitops(bundle, "./control-plane")
     wait_for("API health", lambda: urllib.request.urlopen(API_URL + "/health", timeout=5).status == 200, READY_SECONDS)
     login()
-    args = ["cluster", "create", "--name", "local", "--region", REGION, "--kube-context", CONTEXT]
-    if "--tier" in run([binary("locoadm"), "cluster", "create", "--help"]):
-        args.extend(["--tier", "production"])
-    locoadm(*args, log="cluster-create")
+    locoadm("cluster", "create", "--name", "local", "--local", "--kube-context", CONTEXT, log="cluster-create")
     with step("Reconcile the worker"):
         publish_gitops(bundle, "./all")
     def enrolled():
