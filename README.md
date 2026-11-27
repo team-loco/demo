@@ -14,7 +14,7 @@ Astronomy Shop is a microservices application where users browse products, add i
 2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` into `.state/gitops/` to generate the API environment Secret and OpenBao seal key, then overlay the tracked `gitops/` files while retaining those Secrets.
 3. Publish that operator repository to the local OCI registry with `flux push artifact`. Bootstrap an `OCIRepository` and root Flux `Kustomization` against `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, config and control-plane layers.
 4. Run `locoadm login --api http://api.loco-demo.localhost --web http://console.loco-demo.localhost --device`.
-5. Run `locoadm cluster create --name local --region local-1 --kube-context kind-loco-demo`, adding `--tier production` when the selected CLI supports tiers. Core lets the first worker create `local-1`. This writes `loco-agent-join-token` directly into `loco-system`.
+5. Run `locoadm cluster create --name local --local --kube-context kind-loco-demo`. The `--local` flag creates the development region `local-1` for the first worker. This writes `loco-agent-join-token` directly into `loco-system`.
 6. Publish the repository with the `./all` entry point, reconcile the worker, and wait for `locoadm status` to report enrollment, a healthy heartbeat and no unclaimed admins.
 
 The runner sets `LOCO_TARGET_PLATFORM` in the generated control-plane values to match the kind nodes (`linux/arm64` on Apple Silicon, `linux/amd64` on x86). The tracked values remain portable between hosts.
