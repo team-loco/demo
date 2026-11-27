@@ -432,6 +432,15 @@ def configure_cluster_dns(hosts):
 
 
 def start_fixtures():
+    with step("Prepare kind nodes for application user namespaces"):
+        # Kind's masked sysfs prevents nested user namespaces from mounting sysfs.
+        for node in run(["kind", "get", "nodes", "--name", CLUSTER]).split():
+            run(["docker", "exec", node, "sh", "-ec", """
+userns_sysfs=/run/loco-userns-sysfs
+mkdir -p "$userns_sysfs"
+if ! mountpoint -q "$userns_sysfs"; then
+    mount -t sysfs -o ro,nosuid,nodev,noexec sysfs "$userns_sysfs"
+fi"""])
     with step("Start PostgreSQL, registry, S3 storage and Dex"):
         compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
         discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
