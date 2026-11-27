@@ -1267,8 +1267,7 @@ def down():
         if remaining:
             raise RuntimeError("Demo fixtures remain after teardown: " + ", ".join(sorted(remaining)))
     with step("Delete demo kind cluster"), tempfile.TemporaryDirectory(prefix="loco-demo-down-") as temp:
-        kubeconfig = STATE / "kubeconfig" if owned else Path(temp) / "kubeconfig"
-        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", kubeconfig], timeout=120)
+        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", Path(temp) / "kubeconfig"], timeout=120)
         if cluster_exists():
             raise RuntimeError(f"kind still lists {CLUSTER}. Run mise run down again to finish teardown.")
     if owned:

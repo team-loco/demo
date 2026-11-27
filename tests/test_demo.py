@@ -274,21 +274,23 @@ class InstallationTests(unittest.TestCase):
         self.assertIn("No loco-demo cluster or demo fixtures found", output.getvalue())
 
     def test_down_propagates_discovery_and_teardown_failures(self):
-        for failure in ("kind unavailable", "Docker unavailable", "fixtures remain", "cluster remains"):
-            with self.subTest(failure=failure):
-                demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
-                with patch.object(demo, "owns_infrastructure", return_value=failure != "kind unavailable"), \
-                        patch.object(demo, "compose"), \
-                        patch.object(demo, "run", return_value=""), \
-                        patch.object(demo, "cluster_exists", side_effect=RuntimeError(failure) if failure == "kind unavailable"
-                                     else lambda: failure == "cluster remains"), \
-                        patch.object(demo, "fixture_containers", side_effect=RuntimeError(failure) if failure == "Docker unavailable"
-                                     else lambda: {"loco-demo-postgres"} if failure == "fixtures remain" else set()):
-                    with self.assertRaises(RuntimeError):
+        cases = [
+            (False, RuntimeError("kind unavailable"), set(), "kind unavailable"),
+            (False, False, RuntimeError("Docker unavailable"), "Docker unavailable"),
+            (True, False, {"loco-demo-postgres"}, "Demo fixtures remain after teardown: loco-demo-postgres"),
+            (True, True, set(), "kind still lists loco-demo"),
+        ]
+        for owned, cluster, fixtures, error in cases:
+            with self.subTest(error=error):
+                if owned:
+                    demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
+                with patch.object(demo, "compose"), patch.object(demo, "run", return_value=""), \
+                        patch.object(demo, "cluster_exists", side_effect=[cluster]), \
+                        patch.object(demo, "fixture_containers", side_effect=[fixtures]):
+                    with self.assertRaisesRegex(RuntimeError, error):
                         demo.down()
                 self.assertTrue(self.state.exists())
-                if failure != "kind unavailable":
-                    self.assertTrue(demo.teardown_pending())
+                self.assertEqual(demo.teardown_pending(), owned)
 
     def test_lifecycle_lock_blocks_other_checkouts(self):
         lock_path = Path(self.temp.name) / "shared-lifecycle.lock"
