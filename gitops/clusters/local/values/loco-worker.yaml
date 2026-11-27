@@ -1,9 +1,13 @@
 global:
+  platformTelemetry:
+    enabled: true
+    installation: loco-demo
+    cluster: local
+    environment: development
   region: local-1
   domain:
     apps:
     - loco-demo-apps.localhost
-    platform: loco-demo.localhost
   exporter:
     endpoint: http://ingest.loco-demo.localhost
 env:

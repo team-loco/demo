@@ -45,6 +45,7 @@ AUTH = json.loads(CONTROL_PLANE["api"]["env"]["AUTH_ISSUERS"])[0]
 REGION = WORKER["global"]["region"]
 CLUSTER = "loco-demo"
 PROJECT = "loco-demo"
+LIFECYCLE_LOCK = Path(tempfile.gettempdir()) / f"loco-demo-{os.getuid()}-lifecycle.lock"
 CONTEXT = "kind-" + CLUSTER
 DOMAIN = "loco-demo.localhost"
 LOCO_REPOSITORY = "team-loco/loco"
@@ -618,8 +619,8 @@ def cluster_exists():
 
 
 def fixture_containers():
-    containers = set(run(["docker", "ps", "-a", "--format", "{{.Names}}"]).splitlines())
-    return containers.intersection(f"{PROJECT}-{name}" for name in FIXTURES)
+    return set(run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={PROJECT}",
+                    "--format", "{{.Names}}"]).splitlines())
 
 
 def teardown_pending():
@@ -648,11 +649,11 @@ def up():
     clear_interrupted_lifecycle()
     if cluster_exists():
         if not owns_infrastructure():
-            raise RuntimeError(f"{CLUSTER} already exists. Run mise run down from the checkout that owns it.")
+            raise RuntimeError(f"{CLUSTER} already exists. Run mise run down from any demo checkout to remove it.")
         raise RuntimeError(f"{CLUSTER} already exists. Run mise run deploy to use it or mise run down to replace it.")
     collisions = fixture_containers()
     if collisions:
-        raise RuntimeError("Existing demo containers must be removed by their owner: " + ", ".join(sorted(collisions)))
+        raise RuntimeError("Run mise run down to remove existing demo containers: " + ", ".join(sorted(collisions)))
     # A new cluster must not reuse another installation's login or workspace IDs.
     if STATE.exists():
         shutil.rmtree(STATE)
@@ -1252,17 +1253,26 @@ def owns_infrastructure():
 
 
 def down():
-    if not owns_infrastructure():
-        print("No infrastructure owned by this checkout; nothing to remove", flush=True)
+    owned = owns_infrastructure()
+    if not owned and not cluster_exists() and not fixture_containers():
+        print(f"No {CLUSTER} cluster or demo fixtures found in the current Docker context", flush=True)
         return
-    (STATE / "teardown-pending").touch()
+    if owned:
+        (STATE / "teardown-pending").touch()
+    else:
+        print(f"Removing {CLUSTER} infrastructure without local ownership state", flush=True)
     with step("Remove demo fixtures"):
         compose("down", "--volumes", "--remove-orphans", timeout=120)
-    with step("Delete demo kind cluster"):
-        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", STATE / "kubeconfig"], timeout=120)
+        remaining = fixture_containers()
+        if remaining:
+            raise RuntimeError("Demo fixtures remain after teardown: " + ", ".join(sorted(remaining)))
+    with step("Delete demo kind cluster"), tempfile.TemporaryDirectory(prefix="loco-demo-down-") as temp:
+        run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", Path(temp) / "kubeconfig"], timeout=120)
         if cluster_exists():
             raise RuntimeError(f"kind still lists {CLUSTER}. Run mise run down again to finish teardown.")
-    shutil.rmtree(STATE)
+    if owned:
+        shutil.rmtree(STATE)
+    print(f"{CLUSTER} cluster and demo fixtures removed", flush=True)
 
 
 def main():
@@ -1274,12 +1284,11 @@ def main():
     if args.loco and args.command != "prepare":
         parser.error("--loco applies only to prepare")
     if args.command in {"up", "down", "reload", "e2e"}:
-        CACHE.mkdir(exist_ok=True)
-        with (CACHE / "lifecycle.lock").open("a") as lock:
+        with LIFECYCLE_LOCK.open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                print("A demo lifecycle task is already running in this checkout.", file=sys.stderr)
+                print("A demo lifecycle task is already running. Wait for it to finish before retrying.", file=sys.stderr)
                 return 1
             try:
                 return run_command(args)
