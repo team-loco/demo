@@ -14,7 +14,7 @@ Astronomy Shop is a microservices application where users browse products, add i
 2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` into `.state/gitops/` to generate the API environment Secret and OpenBao seal key, then overlay the tracked `gitops/` files while retaining those Secrets.
 3. Publish that operator repository to the local OCI registry with `flux push artifact`. Bootstrap an `OCIRepository` and root Flux `Kustomization` against `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, config and control-plane layers.
 4. Run `locoadm login --api http://api.loco-demo.localhost --web http://console.loco-demo.localhost --device`.
-5. Run `locoadm cluster create --name local --region local-1 --kube-context kind-loco-demo`, adding `--tier production` when the selected CLI supports tiers. Core lets the first worker create `local-1`. This writes `loco-agent-join-token` directly into `loco-system`.
+5. Run `locoadm cluster create --name local --local --kube-context kind-loco-demo`. The `--local` flag creates the development region `local-1` for the first worker. This writes `loco-agent-join-token` directly into `loco-system`.
 6. Publish the repository with the `./all` entry point, reconcile the worker, and wait for `locoadm status` to report enrollment, a healthy heartbeat and no unclaimed admins.
 
 The runner sets `LOCO_TARGET_PLATFORM` in the generated control-plane values to match the kind nodes (`linux/arm64` on Apple Silicon, `linux/amd64` on x86). The tracked values remain portable between hosts.
@@ -107,7 +107,7 @@ loco deploy --file loco.yaml --env production --yes --confirm-import
 
 Every service except product-catalog runs the upstream release image `ghcr.io/open-telemetry/demo:3.1.0-<service>`, pinned by digest in `loco.yaml`. The 16 services are accounting, ad, cart, checkout, currency, email, fraud-detection, frontend, frontend-proxy, image-provider, load-generator, payment, product-catalog, quote, recommendation and shipping.
 
-Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Services whose images default to root or to a named user declare numeric `runAsUser` and `runAsGroup` values in their `loco.yaml`.
+Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Loco preserves each image's declared user inside a Kubernetes user namespace; `loco.yaml` does not override user or group IDs.
 
 product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
 

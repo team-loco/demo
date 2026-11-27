@@ -432,6 +432,15 @@ def configure_cluster_dns(hosts):
 
 
 def start_fixtures():
+    with step("Prepare kind nodes for application user namespaces"):
+        # Kind's masked sysfs prevents nested user namespaces from mounting sysfs.
+        for node in run(["kind", "get", "nodes", "--name", CLUSTER]).split():
+            run(["docker", "exec", node, "sh", "-ec", """
+userns_sysfs=/run/loco-userns-sysfs
+mkdir -p "$userns_sysfs"
+if ! mountpoint -q "$userns_sysfs"; then
+    mount -t sysfs -o ro,nosuid,nodev,noexec sysfs "$userns_sysfs"
+fi"""])
     with step("Start PostgreSQL, registry, S3 storage and Dex"):
         compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
         discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
@@ -595,10 +604,7 @@ def install_loco():
         publish_gitops(bundle, "./control-plane")
     wait_for("API health", lambda: urllib.request.urlopen(API_URL + "/health", timeout=5).status == 200, READY_SECONDS)
     login()
-    args = ["cluster", "create", "--name", "local", "--region", REGION, "--kube-context", CONTEXT]
-    if "--tier" in run([binary("locoadm"), "cluster", "create", "--help"]):
-        args.extend(["--tier", "production"])
-    locoadm(*args, log="cluster-create")
+    locoadm("cluster", "create", "--name", "local", "--local", "--kube-context", CONTEXT, log="cluster-create")
     with step("Reconcile the worker"):
         publish_gitops(bundle, "./all")
     def enrolled():
