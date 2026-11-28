@@ -393,7 +393,7 @@ def validate():
     rendered = run(["kubectl", "kustomize", GITOPS / "clusters/local", "--load-restrictor=LoadRestrictionsNone"])
     (OUT / "gitops.yaml").write_text(rendered)
     run(["kubectl", "kustomize", GITOPS / "clusters/local/config"])
-    for path in ["dependencies", "artifacts"]:
+    for path in ["dependencies", "platform-artifacts"]:
         run(["kubectl", "kustomize", CONFIG / path])
     print("Validated loco.yaml, the infrastructure-only chart and gitops/clusters/local", flush=True)
 
@@ -449,7 +449,7 @@ fi"""])
         for name in FIXTURES:
             kube("-n", "loco-demo", "rollout", "status", "deployment/" + name, "--timeout=120s")
         if loco_source()["source"] != "release":
-            kube("apply", "-k", CONFIG / "artifacts")
+            kube("apply", "-k", CONFIG / "platform-artifacts")
             kube("-n", "loco-demo", "rollout", "status", "deployment/artifacts", "--timeout=120s")
         discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
         wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200, 30)

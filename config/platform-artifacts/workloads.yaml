@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifacts
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: artifacts
+  template:
+    metadata:
+      labels:
+        app: artifacts
+    spec:
+      automountServiceAccountToken: false
+      containers:
+      - name: registry
+        image: ghcr.io/project-zot/zot:v2.1.22@sha256:96cda11459ce6f8c60da3b03f03e9f67fd11b3ae2d82c4c04c92b3c608996080
+        ports:
+        - containerPort: 5000
+        volumeMounts:
+        - name: config
+          mountPath: /etc/zot
+          readOnly: true
+        - name: data
+          mountPath: /var/lib/registry
+        readinessProbe:
+          tcpSocket:
+            port: 5000
+          periodSeconds: 2
+      volumes:
+      - name: config
+        projected:
+          sources:
+          - configMap:
+              name: artifacts
+          - secret:
+              name: artifacts
+      - name: data
+        emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: artifacts
+spec:
+  type: NodePort
+  selector:
+    app: artifacts
+  ports:
+  - port: 5000
+    nodePort: 30500
