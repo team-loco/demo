@@ -1,5 +1,4 @@
 import argparse
-import base64
 import contextlib
 import datetime as dt
 import fcntl
@@ -545,29 +544,22 @@ def publish_gitops(bundle, entry):
     write_yaml(source, doc)
     path = repo / "bases/all/loco.yaml"
     docs = list(yaml.safe_load_all(path.read_text()))
+    revision = "revisions/" + uuid.uuid4().hex
     for doc in docs:
         if not doc:
             continue
         if doc["metadata"]["name"] == "loco":
             doc["spec"]["path"] = entry
-            if repository.startswith(REGISTRY_ADDRESS):
-                source_patch = [{"target": {"kind": "OCIRepository"}, "patch": json.dumps([
-                    {"op": "add", "path": "/spec/insecure", "value": True}])}]
-                doc["spec"]["patches"] = [{"target": {"kind": "Kustomization"}, "patch": json.dumps([
-                    {"op": "add", "path": "/spec/patches", "value": source_patch}])}]
         elif doc["metadata"]["name"] == "loco-cluster-config":
             doc["spec"]["sourceRef"] = {"kind": "Bucket", "name": "demo-config"}
-    # Upload a complete immutable revision before making it visible to Flux.
-    revision = "revisions/" + uuid.uuid4().hex
-    for doc in docs:
-        if doc and doc["metadata"]["name"] == "loco-cluster-config":
             doc["spec"]["path"] = "./" + revision + "/clusters/local/config"
+        if doc["spec"]["sourceRef"]["kind"] == "OCIRepository" and repository.startswith(REGISTRY_ADDRESS):
+            source_patch = [{"target": {"kind": "OCIRepository"}, "patch": json.dumps([
+                {"op": "add", "path": "/spec/insecure", "value": True}])}]
+            doc["spec"]["patches"] = [{"target": {"kind": "Kustomization"}, "patch": json.dumps([
+                {"op": "add", "path": "/spec/patches", "value": source_patch}])}]
     path.write_text(yaml.safe_dump_all([doc for doc in docs if doc], sort_keys=False))
-    root_path = repo / "clusters/local/kustomization.yaml"
-    root_config = yaml.safe_load(root_path.read_text())
-    root_config["patches"][0]["patch"] = yaml.safe_dump([
-        {"op": "replace", "path": "/spec/path", "value": "./" + revision + "/clusters/local/config"}])
-    write_yaml(root_path, root_config)
+    # Upload a complete immutable revision before making it visible to Flux.
     storage = storage_client()
     for file in sorted(repo.rglob("*")):
         if file.is_file():

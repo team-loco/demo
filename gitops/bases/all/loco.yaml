@@ -23,7 +23,7 @@ spec:
   - name: loco-namespaces
   - name: loco-postgres-operator
   interval: 5m
-  path: ./
+  path: ./clusters/local/config
   prune: true
   sourceRef:
     kind: GitRepository

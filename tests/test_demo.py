@@ -38,20 +38,37 @@ class InstallationTests(unittest.TestCase):
                 self.assertIn(revision + "/clusters/local/kustomization.yaml", uploads)
                 self.assertIn(revision + "/clusters/local/config/openbao-seal.yaml", uploads)
             return ""
+        for registry in ["ghcr.io", demo.REGISTRY_ADDRESS]:
+            with self.subTest(registry=registry):
+                shutil.copytree(demo.GITOPS, repo, dirs_exist_ok=True)
+                previous_uploads = dict(uploads)
+                with patch.object(demo, "tune_flux_dependency_retries"), \
+                        patch.object(demo, "storage_client") as storage, \
+                        patch.object(demo, "flux", side_effect=flux), patch.object(demo, "kube"):
+                    storage.return_value.put_object.side_effect = upload
+                    demo.publish_gitops(registry + "/team-loco/loco/platform@sha256:" + "a" * 64, "./all")
+                self.assertEqual({key: uploads[key] for key in previous_uploads}, previous_uploads)
+                rendered = yaml.safe_load_all(demo.run(["kubectl", "kustomize", repo / "clusters/local",
+                                                       "--load-restrictor=LoadRestrictionsNone"]))
+                resources = {doc["metadata"]["name"]: doc for doc in rendered}
+                for name in ["loco", "loco-postgres"]:
+                    platform = resources[name]["spec"]
+                    self.assertEqual(platform["sourceRef"], {"kind": "OCIRepository", "name": "platform-bundle"})
+                    if registry == demo.REGISTRY_ADDRESS:
+                        nested = json.loads(platform["patches"][0]["patch"])[0]["value"]
+                        self.assertEqual(json.loads(nested[0]["patch"]), [
+                            {"op": "add", "path": "/spec/insecure", "value": True}])
+                config = resources["loco-cluster-config"]["spec"]
+                self.assertEqual(config["sourceRef"], {"kind": "Bucket", "name": "demo-config"})
+                self.assertIn(config["path"].removeprefix("./") + "/openbao-seal.yaml", uploads)
+                self.assertIn({"name": "loco-postgres-operator"}, config["dependsOn"])
+
         with patch.object(demo, "tune_flux_dependency_retries"), \
-                patch.object(demo, "storage_client") as storage, \
-                patch.object(demo, "flux", side_effect=flux), patch.object(demo, "kube"):
-            storage.return_value.put_object.side_effect = upload
-            demo.publish_gitops("ghcr.io/team-loco/loco/platform@sha256:" + "a" * 64, "./all")
-        rendered = yaml.safe_load_all(demo.run(["kubectl", "kustomize", repo / "clusters/local",
-                                               "--load-restrictor=LoadRestrictionsNone"]))
-        resources = {doc["metadata"]["name"]: doc for doc in rendered}
-        operator = resources["loco-postgres"]["spec"]
-        self.assertEqual(operator["sourceRef"], {"kind": "OCIRepository", "name": "platform-bundle"})
-        config = resources["loco-cluster-config"]["spec"]
-        self.assertEqual(config["sourceRef"], {"kind": "Bucket", "name": "demo-config"})
-        self.assertIn(config["path"].removeprefix("./") + "/openbao-seal.yaml", uploads)
-        self.assertIn({"name": "loco-postgres-operator"}, config["dependsOn"])
+                patch.object(demo, "storage_client") as storage, patch.object(demo, "flux") as publish:
+            storage.return_value.put_object.side_effect = RuntimeError("upload interrupted")
+            with self.assertRaisesRegex(RuntimeError, "upload interrupted"):
+                demo.publish_gitops("ghcr.io/team-loco/loco/platform@sha256:" + "b" * 64, "./all")
+        publish.assert_not_called()
 
     def test_create_workspace_uses_the_demo_users_starter_org(self):
         replies = [
