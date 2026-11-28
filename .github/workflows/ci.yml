@@ -19,7 +19,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
         with:
-          version: 2026.10.6
+          version: 2026.10.19
       - run: mise run setup
       - run: mise run validate
       - run: mise run test
@@ -38,7 +38,7 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
         with:
-          version: 2026.10.6
+          version: 2026.10.19
       - run: mise run setup -- --loco ${{ matrix.loco }}
       - run: mise run e2e -- --keep
       - name: Verify S3 survives pod replacement
