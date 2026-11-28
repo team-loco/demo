@@ -161,6 +161,14 @@ class InstallationTests(unittest.TestCase):
             self.assertFalse(demo.discover_app_namespace())
         self.assertNotIn("namespace", demo.identity())
 
+    def test_verify_stops_polling_after_services_cannot_start(self):
+        failure = {"name": "health:frontend", "status": "FAIL", "detail": "Insufficient cpu"}
+        with patch.object(demo, "RESULTS", [failure]), patch.object(demo, "resources", return_value={}), \
+                patch.object(demo, "check_health"), patch.object(demo, "save_report") as report, \
+                patch.object(demo, "record", side_effect=AssertionError("Polled after failed service health")):
+            self.assertFalse(demo.verify())
+        report.assert_called_once()
+
     def test_failed_deploy_preserves_original_failure(self):
         with patch.object(demo, "create_workspace"), patch.object(demo, "record", return_value=False), \
                 patch.object(demo, "record_resources") as resources, patch.object(demo, "run") as run:

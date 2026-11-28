@@ -1199,6 +1199,9 @@ def check_dependencies():
 def verify():
     ids = resources()
     check_health(ids)
+    if any(result["status"] == "FAIL" for result in RESULTS):
+        save_report()
+        return False
     record("dependencies", check_dependencies)
     record("storefront", check_storefront)
     record("logs-api", check_logs)
