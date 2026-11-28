@@ -108,7 +108,7 @@ Every service except product-catalog runs the upstream release image `ghcr.io/op
 
 Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Loco preserves each image's declared user inside a Kubernetes user namespace; `loco.yaml` does not override user or group IDs.
 
-product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
+product-catalog builds through Loco from [`images/product-catalog/`](images/product-catalog/), using the pinned upstream image and its `otel-config.yml` at the path the entrypoint expects. This exercises source upload to S3, the in-cluster builder, an authenticated push to Zot and a node pull using API-issued credentials. [`.dockerignore`](.dockerignore) limits the source archive to that build context.
 
 See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 

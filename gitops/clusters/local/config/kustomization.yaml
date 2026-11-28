@@ -3,4 +3,5 @@ kind: Kustomization
 resources:
 - api-env.yaml
 - openbao-seal.yaml
+- build-egress.yaml
 ---

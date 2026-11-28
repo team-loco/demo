@@ -1179,9 +1179,34 @@ def check_storefront():
     return SHOP_URL
 
 
+def check_dependencies():
+    kube("-n", "loco-system", "get", "clusters.postgresql.cnpg.io,pvc,pods", "-o", "wide",
+         log=OUT / "control-plane-dependencies.log")
+    kube("-n", "loco-demo", "get", "deployments,pvc,pods", "-o", "wide",
+         log=OUT / "demo-dependencies.log")
+    request = urllib.request.Request(CONTROL_PLANE["api"]["env"]["LOCO_REGISTRY_URL"] + "/v2/")
+    try:
+        urllib.request.urlopen(request, timeout=10).close()
+    except urllib.error.HTTPError as exc:
+        challenge = exc.headers.get("WWW-Authenticate", "")
+        if exc.code != 401 or API_URL + "/registry/token" not in challenge:
+            raise RuntimeError(f"Registry did not challenge with API token authentication: {exc.code} {challenge}") from exc
+    else:
+        raise RuntimeError("Registry accepted an unauthenticated request")
+    catalog = json.loads(kube("-n", app_namespace(), "get", "pods", "-l",
+                              "loco.io/resource-id=" + resources()["product-catalog"], "-o", "json"))
+    images = [container["image"] for pod in catalog["items"] for container in pod["spec"]["containers"]]
+    registry = CONTROL_PLANE["api"]["env"]["LOCO_REGISTRY_HOST"] + "/"
+    if not any(image.startswith(registry) for image in images):
+        raise RuntimeError("Product catalog did not deploy an image built into the application registry")
+    (OUT / "registry-build.json").write_text(json.dumps({"challenge": challenge, "images": images}, indent=2) + "\n")
+    return "Chart-managed PostgreSQL and Zot; Dex and S3 inside kind; product catalog built and pulled from token-authenticated Zot"
+
+
 def verify():
     ids = resources()
     check_health(ids)
+    record("dependencies", check_dependencies)
     record("storefront", check_storefront)
     record("logs-api", check_logs)
     record("observability-scope", check_observability_scope)
