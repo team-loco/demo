@@ -40,6 +40,11 @@ jobs:
         with:
           version: 2026.10.19
       - run: mise run setup -- --loco ${{ matrix.loco }}
+      - name: Pin the main source snapshot
+        if: matrix.loco == 'main'
+        run: |
+          mise run setup -- --loco "$PWD/.cache/loco"
+          git -C .cache/loco rev-parse HEAD > artifacts/core-commit.txt
       - run: mise run e2e -- --keep
       - name: Verify S3 survives pod replacement
         run: |
