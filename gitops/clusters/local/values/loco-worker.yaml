@@ -12,7 +12,7 @@ global:
     endpoint: http://ingest.loco-demo.localhost
 env:
   CONTROL_PLANE_URL: http://api.loco-demo.localhost
-  LOCO_REGISTRY_HOST: registry.loco-demo.localhost:5000
+  LOCO_REGISTRY_HOST: registry.loco-demo.localhost
 certManager:
   issuer:
     create: false
@@ -28,8 +28,6 @@ controller:
     pullPolicy: IfNotPresent
 builds:
   privateEgress: []
-  pushSecretName: loco-registry-push
   insecureRegistry: true
 registry:
-  auth: static
-  pullSecretName: loco-registry-pull
+  auth: token

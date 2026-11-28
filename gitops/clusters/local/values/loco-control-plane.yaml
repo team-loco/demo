@@ -5,8 +5,7 @@ api:
   systemAdmins:
   - demo@example.test
   registry:
-    auth: static
-    service: registry.loco-demo.localhost:5000
+    auth: token
   env:
     WEB_URL: http://console.loco-demo.localhost
     CORS_ALLOWED_ORIGINS: http://console.loco-demo.localhost
@@ -16,8 +15,8 @@ api:
     LOCO_SOURCE_BUCKET_ENDPOINT: http://s3.loco-demo.localhost:19000
     LOCO_SOURCE_BUCKET: loco-sources
     LOCO_SOURCE_BUCKET_REGION: us-east-1
-    LOCO_REGISTRY_HOST: registry.loco-demo.localhost:5000
-    LOCO_REGISTRY_URL: http://registry.loco-demo.localhost:5000
+    LOCO_REGISTRY_HOST: registry.loco-demo.localhost
+    LOCO_REGISTRY_URL: http://registry.loco-demo.localhost
 certManager:
   enabled: false
   issuer:
@@ -41,3 +40,14 @@ openbao:
 platformTelemetry:
   enabled: true
   region: local-1
+postgres:
+  enabled: true
+  instances: 1
+  storage:
+    size: 2Gi
+registry:
+  enabled: true
+  hostname: registry.loco-demo.localhost
+  storage:
+    volume:
+      size: 5Gi
