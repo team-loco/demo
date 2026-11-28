@@ -40,3 +40,4 @@ openbao:
         name: loco-inputs
 platformTelemetry:
   enabled: true
+  region: local-1
