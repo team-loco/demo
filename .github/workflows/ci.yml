@@ -51,8 +51,7 @@ jobs:
         run: |
           cp artifacts/results.json artifacts/before-reload-results.json
           cp .state/identity.json artifacts/before-reload-identity.json
-          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout restart deployment/artifacts
-          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout status deployment/artifacts --timeout=120s
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo delete deployment/artifacts service/artifacts
           mise run reload
           mise run verify
           cmp .state/identity.json artifacts/before-reload-identity.json
