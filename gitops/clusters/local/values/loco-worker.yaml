@@ -23,11 +23,25 @@ metrics-server:
   enabled: true
   args:
   - --kubelet-insecure-tls
+  replicas: 1
 controller:
   image:
     pullPolicy: IfNotPresent
+  replicas: 1
 builds:
   privateEgress: []
   insecureRegistry: true
+  controller:
+    replicas: 1
+  resources:
+    build:
+      requests:
+        cpu: 500m
 registry:
   auth: token
+envoyProxy:
+  replicas: 1
+  autoscaling:
+    enabled: false
+otel-col-deploy:
+  replicaCount: 1

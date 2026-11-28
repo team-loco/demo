@@ -19,6 +19,8 @@ Astronomy Shop is a microservices application where users browse products, add i
 
 The runner sets `LOCO_TARGET_PLATFORM` in the generated control-plane values to match the kind nodes (`linux/arm64` on Apple Silicon, `linux/amd64` on x86). The tracked values remain portable between hosts.
 
+Local values use one replica per platform service, with fixed gateway and ingest replica counts. Builds reserve 500m CPU. This leaves scheduling room for the shop and its build on the two-node kind cluster.
+
 The control-plane chart creates the shared self-signed ClusterIssuer; the worker references it. `api.systemAdmins` lists `demo@example.test`, so its first sign-in becomes a system admin. The runner approves the device code through the API's `ApproveDeviceLogin` with an ID token from Dex's password grant.
 
 The tracked Secret manifests contain placeholders. The runner supplies the fixture credentials and generates the seal key only in ignored `.state/`; join tokens stay in the cluster. Use encrypted Secrets or another operator-managed secret delivery mechanism for a persistent installation.

@@ -1218,6 +1218,7 @@ def diagnostics():
         return
     if (STATE / "kubeconfig").exists():
         for args, name in [
+            (["describe", "nodes"], "node-capacity"),
             (["get", "pods", "-A", "-o", "wide"], "pods"),
             (["get", "pods", "-A", "-o", "json"], "pod-status"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),

@@ -1,6 +1,7 @@
 controlPlaneHostname: api.loco-demo.localhost
 ui:
   hostname: console.loco-demo.localhost
+  replicaCount: 1
 api:
   systemAdmins:
   - demo@example.test
@@ -15,6 +16,7 @@ api:
     LOCO_SOURCE_BUCKET_ENDPOINT: http://s3.loco-demo.localhost:19000
     LOCO_SOURCE_BUCKET: loco-sources
     LOCO_SOURCE_BUCKET_REGION: us-east-1
+  replicaCount: 1
 certManager:
   enabled: false
   issuer:
@@ -26,6 +28,9 @@ certManager:
 obsProxy:
   ingest:
     hostname: ingest.loco-demo.localhost
+    replicaCount: 1
+    autoscaling:
+      enabled: false
 openbao:
   snapshots:
     enabled: true
@@ -35,6 +40,7 @@ openbao:
       bucket: loco-backups
       existingSecret:
         name: loco-inputs
+  replicas: 1
 platformTelemetry:
   enabled: true
   region: local-1
@@ -49,3 +55,7 @@ registry:
   storage:
     volume:
       size: 5Gi
+gateway:
+  replicaCount: 1
+  autoscaling:
+    enabled: false
