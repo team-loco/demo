@@ -51,6 +51,12 @@ jobs:
         run: |
           cp artifacts/results.json artifacts/before-reload-results.json
           cp .state/identity.json artifacts/before-reload-identity.json
+          bundle_ref=$(jq -r '.bundle | sub("^[^/]+"; "localhost:15000")' .state/release.json)
+          crane manifest --insecure "$bundle_ref" > artifacts/platform-manifest-before.json
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout restart deployment/artifacts
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout status deployment/artifacts --timeout=120s
+          crane manifest --insecure "$bundle_ref" > artifacts/platform-manifest-after.json
+          cmp artifacts/platform-manifest-before.json artifacts/platform-manifest-after.json
           kubectl --kubeconfig .state/kubeconfig -n loco-demo delete deployment/artifacts service/artifacts
           mise run reload
           mise run verify
