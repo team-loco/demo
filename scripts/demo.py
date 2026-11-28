@@ -1,5 +1,4 @@
 import argparse
-import base64
 import contextlib
 import datetime as dt
 import fcntl
@@ -24,6 +23,8 @@ import urllib.parse
 import urllib.request
 import uuid
 
+import boto3
+from botocore.config import Config
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,19 +41,20 @@ CONTROL_PLANE = yaml.safe_load((VALUES / "loco-control-plane.yaml").read_text())
 WORKER = yaml.safe_load((VALUES / "loco-worker.yaml").read_text())
 API_URL = WORKER["env"]["CONTROL_PLANE_URL"]
 WEB_URL = CONTROL_PLANE["api"]["env"]["WEB_URL"]
+APP_REGISTRY_HOST = CONTROL_PLANE["registry"]["hostname"]
+APP_REGISTRY_URL = "http://" + APP_REGISTRY_HOST
 SHOP_URL = f"http://{SERVICES['frontend-proxy']['domains'][0]}:8080"
 AUTH = json.loads(CONTROL_PLANE["api"]["env"]["AUTH_ISSUERS"])[0]
 REGION = WORKER["global"]["region"]
 CLUSTER = "loco-demo"
-PROJECT = "loco-demo"
 LIFECYCLE_LOCK = Path(tempfile.gettempdir()) / f"loco-demo-{os.getuid()}-lifecycle.lock"
 CONTEXT = "kind-" + CLUSTER
 DOMAIN = "loco-demo.localhost"
 LOCO_REPOSITORY = "team-loco/loco"
 # The registry addresses for host pushes and in-cluster pulls.
 REGISTRY_PUSH = "localhost:15000"
-REGISTRY_ADDRESS = "registry." + DOMAIN + ":5000"
-FIXTURES = ["postgres", "registry", "s3", "dex"]
+REGISTRY_ADDRESS = "artifacts.loco-demo.svc.cluster.local:5000"
+FIXTURES = ["s3", "dex"]
 DEMO_EMAIL = "demo@example.test"
 DEMO_PASSWORD = "demo-password"
 # The first shopper in upstream's load-generator people.json.
@@ -200,10 +202,6 @@ def write_yaml(path, data):
 
 def kube(*args, **kwargs):
     return run(["kubectl", "--kubeconfig", STATE / "kubeconfig", "--context", CONTEXT, *args], **kwargs)
-
-
-def compose(*args, **kwargs):
-    return run(["docker", "compose", "-p", PROJECT, "-f", CONFIG / "fixtures.yaml", *args], **kwargs)
 
 
 def loco_source():
@@ -357,14 +355,16 @@ def platform_bundle():
         digest = run(["crane", "digest", f"{repository}:{source['version']}"]).strip()
         return repository + "@" + digest
     checkout = core_checkout()
-    with step("Build the core checkout's platform into the registry fixture"):
-        route_registry_to_nodes(fixture_addresses()["registry"])
-        secret = fixture_inputs()
+    with step("Build the core checkout's platform into the development registry"):
+        kube("apply", "-k", CONFIG / "platform-artifacts")
+        kube("-n", "loco-demo", "rollout", "status", "deployment/artifacts", "--timeout=120s")
+        address = kube("-n", "loco-demo", "get", "service", "artifacts", "-o", "jsonpath={.spec.clusterIP}").strip()
+        route_registry_to_nodes(address)
         # Parallel builds share stderr. Use plain progress to keep them from redrawing the terminal.
         with tempfile.TemporaryFile(mode="w+t") as manifest_file:
             run(["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
                  "--push", REGISTRY_PUSH, "--address", REGISTRY_ADDRESS,
-                 "--username", secret["push-username"], "--password", secret["push-password"]],
+                 "--username", "push", "--password", "loco-demo-push"],
                 cwd=checkout, stdout_file=manifest_file, timeout=INSTALL_SECONDS,
                 log=OUT / "platform-release.log", env={"BUILDKIT_PROGRESS": "plain"})
             manifest_file.seek(0)
@@ -397,6 +397,8 @@ def validate():
     rendered = run(["kubectl", "kustomize", GITOPS / "clusters/local", "--load-restrictor=LoadRestrictionsNone"])
     (OUT / "gitops.yaml").write_text(rendered)
     run(["kubectl", "kustomize", GITOPS / "clusters/local/config"])
+    for path in ["dependencies", "platform-artifacts"]:
+        run(["kubectl", "kustomize", CONFIG / path])
     print("Validated loco.yaml, the infrastructure-only chart and gitops/clusters/local", flush=True)
 
 
@@ -408,16 +410,18 @@ def assert_infrastructure_only(docs):
 
 
 def fixture_addresses():
-    return {name: run(["docker", "inspect", "-f", '{{(index .NetworkSettings.Networks "kind").IPAddress}}',
-                       f"{PROJECT}-{name}"]).strip() for name in FIXTURES}
+    return {name: kube("-n", "loco-demo", "get", "service", name,
+                       "-o", "jsonpath={.spec.clusterIP}").strip() for name in FIXTURES}
 
 
 def cluster_hosts(addresses, gateway):
-    hosts = {addresses[name]: [f"{name}.{DOMAIN}"] for name in FIXTURES}
+    hosts = {addresses[name]: [f"{name}.{DOMAIN}"] for name in addresses}
     storage = urllib.parse.urlsplit(CONTROL_PLANE["api"]["env"]["LOCO_SOURCE_BUCKET_ENDPOINT"]).hostname
     for bucket in [CONTROL_PLANE["api"]["env"]["LOCO_SOURCE_BUCKET"], CONTROL_PLANE["openbao"]["snapshots"]["s3"]["bucket"]]:
         hosts[addresses["s3"]].append(f"{bucket}.{storage}")
-    hosts[gateway] = [urllib.parse.urlsplit(url).hostname for url in [API_URL, WEB_URL, WORKER["global"]["exporter"]["endpoint"]]]
+    hosts[gateway] = [urllib.parse.urlsplit(url).hostname for url in
+                      [API_URL, WEB_URL, WORKER["global"]["exporter"]["endpoint"],
+                       APP_REGISTRY_URL]]
     return hosts
 
 
@@ -441,15 +445,34 @@ mkdir -p "$userns_sysfs"
 if ! mountpoint -q "$userns_sysfs"; then
     mount -t sysfs -o ro,nosuid,nodev,noexec sysfs "$userns_sysfs"
 fi"""])
-    with step("Start PostgreSQL, registry, S3 storage and Dex"):
-        compose("up", "-d", timeout=READY_SECONDS, log=OUT / "fixtures.log", stream=True)
+    with step("Start in-cluster S3 storage and Dex"):
+        kube("apply", "-k", CONFIG / "dependencies")
+        for name in FIXTURES:
+            kube("-n", "loco-demo", "rollout", "status", "deployment/" + name, "--timeout=120s")
         discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
         wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200, 30)
     addresses = fixture_addresses()
-    with step("Route fixture and Loco hostnames inside the cluster"):
+    with step("Route dependency and Loco hostnames inside the cluster"):
         kube("apply", "-f", CONFIG / "inputs.yaml", "-f", CONFIG / "gateway.yaml")
         gateway = kube("-n", "loco-system", "get", "service", "loco-demo-gateway", "-o", "jsonpath={.spec.clusterIP}")
-        configure_cluster_dns(cluster_hosts(addresses, gateway.strip()))
+        hosts = cluster_hosts(addresses, gateway.strip())
+        configure_cluster_dns(hosts)
+        # Nodes use host DNS for image pulls and the registry's API token challenge.
+        entries = "".join(f"{address} {' '.join(names)}\n" for address, names in hosts.items())
+        directory = "/etc/containerd/certs.d/registry." + DOMAIN
+        registry = "http://registry." + DOMAIN
+        config = f'server = "{registry}"\n[host."{registry}"]\n  capabilities = ["pull", "resolve"]\n'
+        for node in run(["kind", "get", "nodes", "--name", CLUSTER]).split():
+            run(["docker", "exec", "-i", node, "sh", "-c", "cat >> /etc/hosts"], input=entries)
+            run(["docker", "exec", "-i", node, "sh", "-c",
+                 f"mkdir -p {directory} && cat > {directory}/hosts.toml"], input=config)
+
+
+def storage_client():
+    inputs = fixture_inputs()
+    return boto3.client("s3", endpoint_url="http://localhost:19000", region_name="us-east-1",
+                        aws_access_key_id=inputs["access-key-id"], aws_secret_access_key=inputs["secret-access-key"],
+                        config=Config(s3={"addressing_style": "path"}, request_checksum_calculation="when_required"))
 
 
 DEVICE_CODE = re.compile(r"^Open \S+ and enter the code (\S+)$")
@@ -520,28 +543,38 @@ def publish_gitops(bundle, entry):
     write_yaml(source, doc)
     path = repo / "bases/all/loco.yaml"
     docs = list(yaml.safe_load_all(path.read_text()))
+    revision = "revisions/" + uuid.uuid4().hex
     for doc in docs:
         if not doc:
             continue
         if doc["metadata"]["name"] == "loco":
             doc["spec"]["path"] = entry
-            if repository.startswith(REGISTRY_ADDRESS):
-                source_patch = [{"target": {"kind": "OCIRepository"}, "patch": json.dumps([
-                    {"op": "add", "path": "/spec/insecure", "value": True}])}]
-                doc["spec"]["patches"] = [{"target": {"kind": "Kustomization"}, "patch": json.dumps([
-                    {"op": "add", "path": "/spec/patches", "value": source_patch}])}]
-        else:
-            doc["spec"]["sourceRef"] = {"kind": "OCIRepository", "name": "demo-config"}
+        elif doc["metadata"]["name"] == "loco-cluster-config":
+            doc["spec"]["sourceRef"] = {"kind": "Bucket", "name": "demo-config"}
+            doc["spec"]["path"] = "./" + revision + "/clusters/local/config"
+        if doc["spec"]["sourceRef"]["kind"] == "OCIRepository" and repository.startswith(REGISTRY_ADDRESS):
+            source_patch = [{"target": {"kind": "OCIRepository"}, "patch": json.dumps([
+                {"op": "add", "path": "/spec/insecure", "value": True}])}]
+            doc["spec"]["patches"] = [{"target": {"kind": "Kustomization"}, "patch": json.dumps([
+                {"op": "add", "path": "/spec/patches", "value": source_patch}])}]
     path.write_text(yaml.safe_dump_all([doc for doc in docs if doc], sort_keys=False))
-    flux("push", "artifact", "oci://" + REGISTRY_PUSH + "/team-loco/demo/config:local", "--path", repo,
-         "--source", str(GITOPS), "--revision", loco_source()["version"], "--insecure-registry",
-         "--creds", fixture_inputs()["push-username"] + ":" + fixture_inputs()["push-password"])
-    source = flux("create", "source", "oci", "demo-config", "--url", "oci://" + REGISTRY_ADDRESS + "/team-loco/demo/config",
-                  "--tag", "local", "--insecure", "--export")
-    root = flux("create", "kustomization", "demo-config", "--source", "OCIRepository/demo-config",
-                "--path", "./clusters/local", "--prune", "--export")
+    # Upload a complete immutable revision before making it visible to Flux.
+    storage = storage_client()
+    for file in sorted(repo.rglob("*")):
+        if file.is_file():
+            storage.put_object(Bucket="loco-gitops", Key=revision + "/" + file.relative_to(repo).as_posix(),
+                               Body=file.read_bytes())
+    inputs = fixture_inputs()
+    secret = {"apiVersion": "v1", "kind": "Secret", "metadata": {"name": "demo-config", "namespace": "flux-system"},
+              "stringData": {"accesskey": inputs["access-key-id"], "secretkey": inputs["secret-access-key"]}}
+    kube("apply", "-f", "-", input=json.dumps(secret))
+    source = flux("create", "source", "bucket", "demo-config", "--bucket-name", "loco-gitops",
+                  "--endpoint", "s3.loco-demo.svc.cluster.local:19000", "--region", "us-east-1",
+                  "--secret-ref", "demo-config", "--insecure", "--export")
+    root = flux("create", "kustomization", "demo-config", "--source", "Bucket/demo-config",
+                "--path", "./" + revision + "/clusters/local", "--prune", "--export")
     kube("apply", "-f", "-", input=source + root)
-    flux("reconcile", "source", "oci", "demo-config")
+    flux("reconcile", "source", "bucket", "demo-config")
     flux("reconcile", "kustomization", "demo-config")
     if entry == "./all":
         flux("reconcile", "kustomization", "loco-cluster-config", "--timeout=10m", timeout=READY_SECONDS + 60,
@@ -549,18 +582,19 @@ def publish_gitops(bundle, entry):
     # The parent waits for the bundle's child Kustomizations to become ready.
     flux("reconcile", "kustomization", "loco", "--with-source", "--timeout=10m", timeout=READY_SECONDS + 60,
          log=OUT / "flux-loco.log", stream=True)
+    if entry == "./all":
+        kube("apply", "-f", CONFIG / "build-egress.yaml")
 
 
 def initialize_gitops(bundle):
     inputs = fixture_inputs()
-    env = {"DATABASE_URL": inputs["database-url"], "LOCO_SOURCE_BUCKET_ACCESS_KEY_ID": inputs["access-key-id"],
-           "LOCO_SOURCE_BUCKET_SECRET_ACCESS_KEY": inputs["secret-access-key"],
-           "LOCO_REGISTRY_USERNAME": inputs["api-username"], "LOCO_REGISTRY_PASSWORD": inputs["api-password"]}
+    env = {"LOCO_SOURCE_BUCKET_ACCESS_KEY_ID": inputs["access-key-id"],
+           "LOCO_SOURCE_BUCKET_SECRET_ACCESS_KEY": inputs["secret-access-key"]}
     env_file = STATE / "api.env"
     env_file.write_text("".join(f"{key}={value}\n" for key, value in env.items()))
     env_file.chmod(0o600)
     repo = STATE / "gitops"
-    locoadm("init", "--single-cluster", "--name", "local", "--output", repo,
+    locoadm("init", "--single-cluster", "--postgres", "--registry", "registry." + DOMAIN, "--name", "local", "--output", repo,
             "--api", API_URL, "--web", WEB_URL, "--domain", WORKER["global"]["domain"]["apps"][0],
             "--region", REGION, "--admin", DEMO_EMAIL, "--bundle", "oci://" + bundle.removeprefix("oci://"),
             "--api-env-file", env_file, log="init")
@@ -575,18 +609,6 @@ def initialize_gitops(bundle):
     values["api"]["env"]["LOCO_TARGET_PLATFORM"] = "linux/" + architectures.pop()
     write_yaml(values_path, values)
     repo.chmod(0o700)
-    credentials = []
-    for role in ["push", "pull"]:
-        auth = base64.b64encode(f"{inputs[role + '-username']}:{inputs[role + '-password']}".encode()).decode()
-        credentials.append({"apiVersion": "v1", "kind": "Secret", "type": "kubernetes.io/dockerconfigjson",
-                            "metadata": {"name": "loco-registry-" + role, "namespace": "loco-system"},
-                            "stringData": {".dockerconfigjson": json.dumps({"auths": {
-                                "registry." + DOMAIN + ":5000": {"auth": auth}}})}})
-    path = repo / "clusters/local/config"
-    (path / "registry.yaml").write_text(yaml.safe_dump_all(credentials))
-    config = next(yaml.safe_load_all((path / "kustomization.yaml").read_text()))
-    config["resources"].append("registry.yaml")
-    write_yaml(path / "kustomization.yaml", config)
 
 
 def install_loco():
@@ -624,11 +646,6 @@ def cluster_exists():
     return CLUSTER in run(["kind", "get", "clusters"]).splitlines()
 
 
-def fixture_containers():
-    return set(run(["docker", "ps", "-a", "--filter", f"label=com.docker.compose.project={PROJECT}",
-                    "--format", "{{.Names}}"]).splitlines())
-
-
 def teardown_pending():
     return (STATE / "teardown-pending").exists()
 
@@ -638,7 +655,7 @@ def clear_interrupted_lifecycle():
         return
     if teardown_pending():
         down()
-    elif cluster_exists() and not fixture_containers():
+    elif cluster_exists():
         if (STATE / "cluster-creating").exists() or not (STATE / "kubeconfig").is_file():
             down()
             return
@@ -657,9 +674,6 @@ def up():
         if not owns_infrastructure():
             raise RuntimeError(f"{CLUSTER} already exists. Run mise run down from any demo checkout to remove it.")
         raise RuntimeError(f"{CLUSTER} already exists. Run mise run deploy to use it or mise run down to replace it.")
-    collisions = fixture_containers()
-    if collisions:
-        raise RuntimeError("Run mise run down to remove existing demo containers: " + ", ".join(sorted(collisions)))
     # A new cluster must not reuse another installation's login or workspace IDs.
     if STATE.exists():
         shutil.rmtree(STATE)
@@ -1158,9 +1172,34 @@ def check_storefront():
     return SHOP_URL
 
 
+def check_dependencies():
+    kube("-n", "loco-system", "get", "clusters.postgresql.cnpg.io,pvc,pods", "-o", "wide",
+         log=OUT / "control-plane-dependencies.log")
+    kube("-n", "loco-demo", "get", "deployments,pvc,pods", "-o", "wide",
+         log=OUT / "demo-dependencies.log")
+    request = urllib.request.Request(APP_REGISTRY_URL + "/v2/")
+    try:
+        urllib.request.urlopen(request, timeout=10).close()
+    except urllib.error.HTTPError as exc:
+        challenge = exc.headers.get("WWW-Authenticate", "")
+        if exc.code != 401 or API_URL + "/registry/token" not in challenge:
+            raise RuntimeError(f"Registry did not challenge with API token authentication: {exc.code} {challenge}") from exc
+    else:
+        raise RuntimeError("Registry accepted an unauthenticated request")
+    catalog = json.loads(kube("-n", app_namespace(), "get", "pods", "-l",
+                              "loco.io/resource-id=" + resources()["product-catalog"], "-o", "json"))
+    images = [container["image"] for pod in catalog["items"] for container in pod["spec"]["containers"]]
+    registry = APP_REGISTRY_HOST + "/"
+    if not any(image.startswith(registry) for image in images):
+        raise RuntimeError("Product catalog did not deploy an image built into the application registry")
+    (OUT / "registry-build.json").write_text(json.dumps({"challenge": challenge, "images": images}, indent=2) + "\n")
+    return "Chart-managed PostgreSQL and Zot; Dex and S3 inside kind; product catalog built and pulled from token-authenticated Zot"
+
+
 def verify():
     ids = resources()
     check_health(ids)
+    record("dependencies", check_dependencies)
     record("storefront", check_storefront)
     record("logs-api", check_logs)
     record("observability-scope", check_observability_scope)
@@ -1179,15 +1218,16 @@ def diagnostics():
         return
     if (STATE / "kubeconfig").exists():
         for args, name in [
+            (["describe", "nodes"], "node-capacity"),
             (["get", "pods", "-A", "-o", "wide"], "pods"),
             (["get", "pods", "-A", "-o", "json"], "pod-status"),
             (["get", "events", "-A", "--sort-by=.lastTimestamp"], "events"),
-            (["get", "kustomizations.kustomize.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io", "-A"], "flux"),
+            (["get", "kustomizations.kustomize.toolkit.fluxcd.io,ocirepositories.source.toolkit.fluxcd.io,buckets.source.toolkit.fluxcd.io,helmreleases.helm.toolkit.fluxcd.io", "-A"], "flux"),
             (["get", "applications", "-A", "-o", "yaml"], "applications"),
         ]:
             with contextlib.suppress(Exception):
                 kube(*args, check=False, timeout=30, log=OUT / (name + ".log"))
-        namespaces = ["loco-system", "flux-system", "cert-manager"]
+        namespaces = ["loco-system", "flux-system", "cert-manager", "cnpg-system", "loco-demo"]
         if (STATE / "identity.json").exists() and "namespace" in identity():
             namespaces.append(app_namespace())
         for ns in namespaces:
@@ -1196,8 +1236,6 @@ def diagnostics():
                     name = pod["metadata"]["name"]
                     kube("-n", ns, "logs", name, "--all-containers", "--tail=100",
                          check=False, timeout=20, log=OUT / "pods" / (name + ".log"))
-    with contextlib.suppress(Exception):
-        compose("logs", "--no-color", "--tail=100", check=False, timeout=30, log=OUT / "fixtures.log")
 
 
 def save_report():
@@ -1260,18 +1298,13 @@ def owns_infrastructure():
 
 def down():
     owned = owns_infrastructure()
-    if not owned and not cluster_exists() and not fixture_containers():
-        print(f"No {CLUSTER} cluster or demo fixtures found in the current Docker context", flush=True)
+    if not owned and not cluster_exists():
+        print(f"No {CLUSTER} cluster found in the current Docker context", flush=True)
         return
     if owned:
         (STATE / "teardown-pending").touch()
     else:
         print(f"Removing {CLUSTER} infrastructure without local ownership state", flush=True)
-    with step("Remove demo fixtures"):
-        compose("down", "--volumes", "--remove-orphans", timeout=120)
-        remaining = fixture_containers()
-        if remaining:
-            raise RuntimeError("Demo fixtures remain after teardown: " + ", ".join(sorted(remaining)))
     with step("Delete demo kind cluster"), tempfile.TemporaryDirectory(prefix="loco-demo-down-") as temp:
         run(["kind", "delete", "cluster", "--name", CLUSTER, "--kubeconfig", Path(temp) / "kubeconfig"], timeout=120)
         if cluster_exists():

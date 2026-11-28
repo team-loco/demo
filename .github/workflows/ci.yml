@@ -19,12 +19,16 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
         with:
-          version: 2026.10.6
+          version: 2026.10.19
       - run: mise run setup
       - run: mise run validate
       - run: mise run test
       - run: mise run lint
   e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        loco: [release, main]
     needs: validate
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -34,9 +38,37 @@ jobs:
           persist-credentials: false
       - uses: jdx/mise-action@2d8d4cafcbd33be2ea37d2b6f5ad595363d1f1ca
         with:
-          version: 2026.10.6
-      - run: mise run setup
+          version: 2026.10.19
+      - run: mise run setup -- --loco ${{ matrix.loco }}
+      - name: Pin the main source snapshot
+        if: matrix.loco == 'main'
+        run: |
+          mise run setup -- --loco "$PWD/.cache/loco"
+          git -C .cache/loco rev-parse HEAD > artifacts/core-commit.txt
       - run: mise run e2e -- --keep
+      - name: Verify S3 survives pod replacement
+        run: |
+          kubectl --kubeconfig .state/kubeconfig -n flux-system get bucket demo-config -o jsonpath='{.status.artifact.revision}' > artifacts/gitops-revision-before.txt
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout restart deployment/s3
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout status deployment/s3 --timeout=120s
+          flux --kubeconfig .state/kubeconfig reconcile source bucket demo-config
+          kubectl --kubeconfig .state/kubeconfig -n flux-system get bucket demo-config -o jsonpath='{.status.artifact.revision}' > artifacts/gitops-revision-after.txt
+          cmp artifacts/gitops-revision-before.txt artifacts/gitops-revision-after.txt
+      - name: Verify local reload preserves the workspace
+        if: matrix.loco == 'main'
+        run: |
+          cp artifacts/results.json artifacts/before-reload-results.json
+          cp .state/identity.json artifacts/before-reload-identity.json
+          bundle_ref=$(jq -r '.bundle | sub("^[^/]+"; "localhost:15000")' .state/release.json)
+          crane manifest --insecure "$bundle_ref" > artifacts/platform-manifest-before.json
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout restart deployment/artifacts
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout status deployment/artifacts --timeout=120s
+          crane manifest --insecure "$bundle_ref" > artifacts/platform-manifest-after.json
+          cmp artifacts/platform-manifest-before.json artifacts/platform-manifest-after.json
+          kubectl --kubeconfig .state/kubeconfig -n loco-demo delete deployment/artifacts service/artifacts
+          mise run reload
+          mise run verify
+          cmp .state/identity.json artifacts/before-reload-identity.json
       - name: Report failures to Loco
         if: failure() && github.event_name != 'pull_request'
         env:
@@ -47,11 +79,18 @@ jobs:
           else
             echo '::warning::Issue reporting requires LOCO_ISSUES_TOKEN with Issues write access to team-loco/loco; see artifacts for failures.'
           fi
+      - name: Verify teardown
+        if: always()
+        run: |
+          mise run down 2>&1 | tee artifacts/teardown.log
+          kind get clusters > artifacts/remaining-clusters.log
+          test ! -s artifacts/remaining-clusters.log
+          docker ps --format '{{.Names}}' > artifacts/remaining-containers.log
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: demo-e2e-evidence
+          name: demo-e2e-evidence-${{ matrix.loco }}
           path: artifacts/
           retention-days: 14
           if-no-files-found: warn

@@ -1,0 +1,30 @@
+# Builds reach the demo's private dependencies through Services, even after pod replacement.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: demo-dependencies
+  namespace: loco-builds
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: loco-demo
+          podSelector:
+            matchLabels:
+              app: s3
+      ports:
+        - {protocol: TCP, port: 19000}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: loco-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: envoy-gateway
+              app.kubernetes.io/component: proxy
+              gateway.envoyproxy.io/owning-gateway-name: loco-control-plane
+      ports:
+        - {protocol: TCP, port: 10080}

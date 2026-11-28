@@ -9,6 +9,6 @@ spec:
     mediaType: application/vnd.oci.image.layer.v1.tar+gzip
     operation: copy
   ref:
-    digest: sha256:1d1dda6026e7c232154001a8ebed6be7b9f01ea82274b7e1337414f4afb51be8
+    digest: sha256:54375feb5d7933d4015fb30750e7de75bf51159c5a9084cd5da828a295b81d2a
   url: oci://ghcr.io/team-loco/loco/platform
 ---

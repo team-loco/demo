@@ -24,6 +24,52 @@ class InstallationTests(unittest.TestCase):
         self.patch.start()
         self.addCleanup(self.patch.stop)
 
+    def test_gitops_publication_keeps_platform_sources_and_publishes_complete_revisions(self):
+        import shutil
+        import yaml
+        repo = self.state / "gitops"
+        shutil.copytree(demo.GITOPS, repo)
+        uploads = {}
+        def upload(**request):
+            uploads[request["Key"]] = request["Body"]
+        def flux(*args, **kwargs):
+            if args[:3] == ("create", "kustomization", "demo-config"):
+                revision = args[args.index("--path") + 1].removeprefix("./").removesuffix("/clusters/local")
+                self.assertIn(revision + "/clusters/local/kustomization.yaml", uploads)
+                self.assertIn(revision + "/clusters/local/config/openbao-seal.yaml", uploads)
+            return ""
+        for registry in ["ghcr.io", demo.REGISTRY_ADDRESS]:
+            with self.subTest(registry=registry):
+                shutil.copytree(demo.GITOPS, repo, dirs_exist_ok=True)
+                previous_uploads = dict(uploads)
+                with patch.object(demo, "tune_flux_dependency_retries"), \
+                        patch.object(demo, "storage_client") as storage, \
+                        patch.object(demo, "flux", side_effect=flux), patch.object(demo, "kube"):
+                    storage.return_value.put_object.side_effect = upload
+                    demo.publish_gitops(registry + "/team-loco/loco/platform@sha256:" + "a" * 64, "./all")
+                self.assertEqual({key: uploads[key] for key in previous_uploads}, previous_uploads)
+                rendered = yaml.safe_load_all(demo.run(["kubectl", "kustomize", repo / "clusters/local",
+                                                       "--load-restrictor=LoadRestrictionsNone"]))
+                resources = {doc["metadata"]["name"]: doc for doc in rendered}
+                for name in ["loco", "loco-postgres"]:
+                    platform = resources[name]["spec"]
+                    self.assertEqual(platform["sourceRef"], {"kind": "OCIRepository", "name": "platform-bundle"})
+                    if registry == demo.REGISTRY_ADDRESS:
+                        nested = json.loads(platform["patches"][0]["patch"])[0]["value"]
+                        self.assertEqual(json.loads(nested[0]["patch"]), [
+                            {"op": "add", "path": "/spec/insecure", "value": True}])
+                config = resources["loco-cluster-config"]["spec"]
+                self.assertEqual(config["sourceRef"], {"kind": "Bucket", "name": "demo-config"})
+                self.assertIn(config["path"].removeprefix("./") + "/openbao-seal.yaml", uploads)
+                self.assertIn({"name": "loco-postgres-operator"}, config["dependsOn"])
+
+        with patch.object(demo, "tune_flux_dependency_retries"), \
+                patch.object(demo, "storage_client") as storage, patch.object(demo, "flux") as publish:
+            storage.return_value.put_object.side_effect = RuntimeError("upload interrupted")
+            with self.assertRaisesRegex(RuntimeError, "upload interrupted"):
+                demo.publish_gitops("ghcr.io/team-loco/loco/platform@sha256:" + "b" * 64, "./all")
+        publish.assert_not_called()
+
     def test_create_workspace_uses_the_demo_users_starter_org(self):
         replies = [
             {"user": {"id": "demo-user"}},
@@ -163,7 +209,6 @@ class InstallationTests(unittest.TestCase):
 
                 with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
                         patch.object(demo, "cluster_exists", return_value=True), \
-                        patch.object(demo, "fixture_containers", return_value=set()), \
                         patch.object(demo, "run", return_value=f"{demo.CLUSTER}-control-plane"), \
                         patch.object(demo, "down") as down:
                     with self.assertRaisesRegex(RuntimeError, "already exists"):
@@ -210,7 +255,7 @@ class InstallationTests(unittest.TestCase):
                             self.fail(f"Unexpected command {args}")
 
                 with patch.object(demo, "prepare"), patch.object(demo, "validate"), \
-                        patch.object(demo, "run", side_effect=run), patch.object(demo, "compose"), \
+                        patch.object(demo, "run", side_effect=run), \
                         patch.object(demo, "start_fixtures"), patch.object(demo, "install_loco") as install, \
                         patch.object(demo, "INFRA_STARTED", False):
                     if phase == "interrupted deletion":
@@ -244,49 +289,31 @@ class InstallationTests(unittest.TestCase):
                     return ""
 
                 with patch.object(demo, "cluster_exists", side_effect=[True, False]), \
-                        patch.object(demo, "fixture_containers", return_value=set()), \
-                        patch.object(demo, "run", side_effect=run), \
-                        patch.object(demo, "compose") as compose:
+                        patch.object(demo, "run", side_effect=run):
                     demo.down()
-                compose.assert_called_once_with("down", "--volumes", "--remove-orphans", timeout=120)
                 self.assertEqual(len(commands), 1)
                 self.assertEqual((self.state / "identity.json").read_text(), "keep-local-state")
                 self.assertFalse(demo.teardown_pending())
                 if owner:
                     self.assertEqual((self.state / "owner.yaml").read_text(), "root: /another/demo/checkout\n")
 
-    def test_down_removes_orphan_fixtures_without_cluster_or_state(self):
-        self.state.rmdir()
-        with patch.object(demo, "cluster_exists", return_value=False), \
-                patch.object(demo, "fixture_containers", side_effect=[{"loco-demo-old-fixture"}, set()]), \
-                patch.object(demo, "compose") as compose, patch.object(demo, "run"):
-            demo.down()
-        compose.assert_called_once_with("down", "--volumes", "--remove-orphans", timeout=120)
-        self.assertFalse(self.state.exists())
-
     def test_down_reports_empty_context_only_after_discovery(self):
         output = io.StringIO()
-        with patch.object(demo, "cluster_exists", return_value=False), \
-                patch.object(demo, "fixture_containers", return_value=set()), \
-                patch.object(demo, "compose") as compose, patch("sys.stdout", output):
+        with patch.object(demo, "cluster_exists", return_value=False), patch("sys.stdout", output):
             demo.down()
-        compose.assert_not_called()
-        self.assertIn("No loco-demo cluster or demo fixtures found", output.getvalue())
+        self.assertIn("No loco-demo cluster found", output.getvalue())
 
     def test_down_propagates_discovery_and_teardown_failures(self):
         cases = [
-            (False, RuntimeError("kind unavailable"), set(), "kind unavailable"),
-            (False, False, RuntimeError("Docker unavailable"), "Docker unavailable"),
-            (True, False, {"loco-demo-postgres"}, "Demo fixtures remain after teardown: loco-demo-postgres"),
-            (True, True, set(), "kind still lists loco-demo"),
+            (False, [RuntimeError("kind unavailable")], "kind unavailable"),
+            (True, [True], "kind still lists loco-demo"),
         ]
-        for owned, cluster, fixtures, error in cases:
+        for owned, cluster, error in cases:
             with self.subTest(error=error):
                 if owned:
                     demo.write_yaml(self.state / "owner.yaml", {"root": str(demo.ROOT)})
-                with patch.object(demo, "compose"), patch.object(demo, "run", return_value=""), \
-                        patch.object(demo, "cluster_exists", side_effect=[cluster]), \
-                        patch.object(demo, "fixture_containers", side_effect=[fixtures]):
+                with patch.object(demo, "run", return_value=""), \
+                        patch.object(demo, "cluster_exists", side_effect=cluster):
                     with self.assertRaisesRegex(RuntimeError, error):
                         demo.down()
                 self.assertTrue(self.state.exists())

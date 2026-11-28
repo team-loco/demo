@@ -10,31 +10,32 @@ Astronomy Shop is a microservices application where users browse products, add i
 
 `mise run up` runs the local installation flow:
 
-1. Create kind and the external-service fixtures, then install Flux 2.10.0 with `flux install` against `kind-loco-demo`.
+1. Create kind and deploy Dex and S3 inside it, then install Flux 2.10.0 with `flux install` against `kind-loco-demo`.
 2. Resolve the release bundle pinned by `versions.json` to its digest. Run `locoadm init --single-cluster` into `.state/gitops/` to generate the API environment Secret and OpenBao seal key, then overlay the tracked `gitops/` files while retaining those Secrets.
-3. Publish that operator repository to the local OCI registry with `flux push artifact`. Bootstrap an `OCIRepository` and root Flux `Kustomization` against `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, config and control-plane layers.
+3. Upload an immutable revision of that operator repository to S3. Bootstrap a Flux `Bucket` source and root `Kustomization` against that revision’s `clusters/local`, then reconcile the bundle's `./control-plane` entry point and its namespace, CRD, infrastructure, CloudNativePG operator, config and control-plane layers. The control-plane chart owns PostgreSQL and Zot; Zot uses API-issued registry tokens.
 4. Run `locoadm login --api http://api.loco-demo.localhost --web http://console.loco-demo.localhost --device`.
 5. Run `locoadm cluster create --name local --local --kube-context kind-loco-demo`. The `--local` flag creates the development region `local-1` for the first worker. This writes `loco-agent-join-token` directly into `loco-system`.
 6. Publish the repository with the `./all` entry point, reconcile the worker, and wait for `locoadm status` to report enrollment, a healthy heartbeat and no unclaimed admins.
 
 The runner sets `LOCO_TARGET_PLATFORM` in the generated control-plane values to match the kind nodes (`linux/arm64` on Apple Silicon, `linux/amd64` on x86). The tracked values remain portable between hosts.
 
+Local values use one replica per platform service, with fixed gateway and ingest replica counts. Builds reserve 500m CPU. This leaves scheduling room for the shop and its build on the two-node kind cluster.
+
 The control-plane chart creates the shared self-signed ClusterIssuer; the worker references it. `api.systemAdmins` lists `demo@example.test`, so its first sign-in becomes a system admin. The runner approves the device code through the API's `ApproveDeviceLogin` with an ID token from Dex's password grant.
 
 The tracked Secret manifests contain placeholders. The runner supplies the fixture credentials and generates the seal key only in ignored `.state/`; join tokens stay in the cluster. Use encrypted Secrets or another operator-managed secret delivery mechanism for a persistent installation.
 
-The demo supplies these external services as Docker containers next to the kind cluster ([`config/fixtures.yaml`](config/fixtures.yaml)):
+All dependencies run inside kind. The control-plane chart installs the API’s PostgreSQL database through CloudNativePG and the Zot application registry with API-issued tokens. The demo starts Dex and S3 from [`config/dependencies/`](config/dependencies/) before installing Flux and Loco.
 
-| Service | Fixture | Address |
-| --- | --- | --- |
-| PostgreSQL | `postgres` | `postgres.loco-demo.localhost:5432` |
-| OCI registry with `api`, `push` and `pull` identities | `zot` | `registry.loco-demo.localhost:5000` |
-| S3-compatible source and backup buckets | `versitygw` | `s3.loco-demo.localhost:19000` |
-| OIDC provider with the user `demo@example.test` and a public `loco` client | Dex | `dex.loco-demo.localhost:15556` |
+| Service | Address |
+| --- | --- |
+| Application registry | `http://registry.loco-demo.localhost` |
+| S3-compatible source, backup and GitOps buckets | `http://s3.loco-demo.localhost:19000` |
+| OIDC provider with `demo@example.test` and a public `loco` client | `http://dex.loco-demo.localhost:15556/dex` |
 
-The fixture credentials are in [`config/inputs.yaml`](config/inputs.yaml). The runner uses them for the API environment, registry push/pull Secrets and OpenBao snapshots. The API, dashboard and OTLP ingest listen on `api`, `console` and `ingest.loco-demo.localhost` through the control-plane Gateway.
+The S3 credentials are demo fixtures. The runner supplies them to the API, OpenBao snapshots and Flux’s Bucket source. Each publication uploads a complete revision before pointing Flux at it. Generated Secrets stay in ignored `.state/` and the authenticated local S3 bucket.
 
-On the host, every `*.localhost` name resolves to `127.0.0.1`, where kind and Docker publish the API, Dex and storage ports. Inside the cluster, CoreDNS resolves the same names to the fixtures and to [`config/gateway.yaml`](config/gateway.yaml).
+On the host, `*.localhost` resolves to `127.0.0.1`, where kind publishes the API, Dex and S3 ports. Inside the cluster, CoreDNS resolves those names to Kubernetes Services. The kind nodes also resolve the API and registry names for authenticated image pulls. The API, dashboard, registry and OTLP ingest share the control-plane Gateway.
 
 ## Run locally
 
@@ -48,18 +49,18 @@ mise run setup
 mise run e2e -- --keep
 ```
 
-This leaves the demo running. Use `mise run down` when you are finished. It removes the demo cluster, fixture containers and their data, even when another checkout started them. To use a local core checkout, replace setup with `mise run setup -- --loco /path/to/core`.
+This leaves the demo running. Use `mise run down` when you are finished. It removes the demo cluster, dependencies and their data, even when another checkout started them. To use a local core checkout, replace setup with `mise run setup -- --loco /path/to/core`.
 
 | Task | What it does |
 | --- | --- |
 | `mise run setup` | Installs the pinned tools, downloads the `loco` and `locoadm` release binaries for the host and checks them against the release's `checksums.txt`, and downloads the upstream chart. `-- --loco` selects another Loco; see [Run unreleased Loco](#run-unreleased-loco). |
 | `mise run validate` | Validates `loco.yaml` and the infrastructure-only upstream chart, and builds the GitOps cluster root and config with `kubectl kustomize`. |
-| `mise run up` | Creates the `loco-demo` kind cluster and fixtures, runs the operator commands above, and checks that the dashboard serves. |
+| `mise run up` | Creates the `loco-demo` kind cluster and in-cluster dependencies, runs the operator commands above, and checks that the dashboard serves. |
 | `mise run reload` | Rebuilds the selected Core source and updates the running demo in place while keeping the workspace and fixture data. |
 | `mise run deploy` | Creates the `astronomy-shop` workspace in the organization created during login, deploys the 16 services with one `loco deploy`, discovers their namespace from Loco's labels, and installs Kafka, Valkey, PostgreSQL and flagd there. The backing services support restricted pod security. |
 | `mise run verify` | Runs the checks below. |
 | `mise run test` | Runs the runner's regression tests. |
-| `mise run down` | Deletes the `loco-demo` cluster and fixtures in the current Docker context, including those created from another checkout. |
+| `mise run down` | Deletes the `loco-demo` cluster and in-cluster dependencies in the current Docker context, including those created from another checkout. |
 | `mise run e2e` | Runs `up`, `deploy` and `verify`, then `down`. `mise run e2e -- --keep` keeps the installation. |
 | `mise run report` | Files failed checks as issues in `team-loco/loco`. |
 
@@ -109,7 +110,7 @@ Every service except product-catalog runs the upstream release image `ghcr.io/op
 
 Services reach each other by name, as in `cart:7070`: Loco gives every service a private address under its own name in the workspace. Loco preserves each image's declared user inside a Kubernetes user namespace; `loco.yaml` does not override user or group IDs.
 
-product-catalog runs `ghcr.io/team-loco/demo/product-catalog`: the upstream image with upstream's `otel-config.yml` at `/otel-config.yml`, built from [`images/product-catalog`](images/product-catalog/) by the [images workflow](.github/workflows/images.yml) and pinned by digest in `loco.yaml`.
+product-catalog builds through Loco from [`images/product-catalog/`](images/product-catalog/), using the pinned upstream image and its `otel-config.yml` at the path the entrypoint expects. This exercises source upload to S3, the in-cluster builder, an authenticated push to Zot and a node pull using API-issued credentials. [`.dockerignore`](.dockerignore) limits the source archive to that build context.
 
 See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 
@@ -120,8 +121,8 @@ See [`UPSTREAM.md`](UPSTREAM.md) for provenance and update instructions.
 | Source | CLIs | Platform |
 | --- | --- | --- |
 | `release` | The release binaries `versions.json` pins. | The release's platform bundle. |
-| `main` | Built from `origin/main` in `.cache/loco`. | Built from that checkout by `release:local` during `up` and pushed to the registry fixture. |
-| A core checkout's path | Built from the checkout. | Built from the checkout by its `release:local` task during `up`, uncommitted changes included, and pushed to the registry fixture. |
+| `main` | Built from `origin/main` in `.cache/loco`. | Built from that checkout by `release:local` during `up` and pushed to the in-cluster development artifact registry. |
+| A core checkout's path | Built from the checkout. | Built from the checkout by its `release:local` task during `up`, uncommitted changes included, and pushed to the in-cluster development artifact registry. |
 
 ```sh
 mise run setup -- --loco main
@@ -131,7 +132,7 @@ mise run setup -- --loco ../loco
 mise run e2e
 ```
 
-For both, `setup` builds the CLIs with Go. For `main`, it also trusts the cloned repository's `mise.toml` and installs its pinned tools. A supplied checkout needs its own `mise` tools installed. During `up`, `release:local` builds six images and the bundle, and writes its manifest to `.state/release.json`. Flux reads the bundle from `registry.loco-demo.localhost:5000`; each node's containerd routes that name to the fixture, which listens on `127.0.0.1:15000` for host pushes. The runner replaces the bundle digest only in `.state/gitops/`. `report` names the commit for `main` and files nothing for a checkout.
+For both, `setup` builds the CLIs with Go. For `main`, it also trusts the cloned repository's `mise.toml` and installs its pinned tools. A supplied checkout needs its own `mise` tools installed. During `up` or `reload`, `release:local` builds six images and the bundle, and writes its manifest to `.state/release.json`. Before each source build, the runner deploys [`config/platform-artifacts/`](config/platform-artifacts/) inside kind. This development registry distributes platform bundles, charts and images before Loco exists; it is separate from Loco’s token-authenticated application registry. Flux reads the bundle from `artifacts.loco-demo.svc.cluster.local:5000`; each node’s containerd routes that name to its Service. Host pushes use `127.0.0.1:15000`. Its demo push credential is scoped to `team-loco/**`, which permits anonymous pulls of development platform artifacts. The runner replaces the bundle digest only in `.state/gitops/`. `report` names the commit for `main` and files nothing for a checkout.
 
 After editing or updating the selected Core checkout, run `mise run reload` from `demo`. It rebuilds the CLIs and platform bundle, then waits for Flux to reconcile the control plane and worker. With `main` selected, it fetches the latest `origin/main` first. Refresh the dashboard after the command completes.
 

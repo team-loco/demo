@@ -1,21 +1,25 @@
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 containerdConfigPatches:
-  - |-
-    [plugins."io.containerd.grpc.v1.cri".registry]
-      config_path = "/etc/containerd/certs.d"
+- "[plugins.\"io.containerd.grpc.v1.cri\".registry]\n  config_path = \"/etc/containerd/certs.d\""
 nodes:
-  - role: control-plane
-    kubeadmConfigPatches:
-      - |
-        kind: InitConfiguration
-        nodeRegistration:
-          taints: []
-    extraPortMappings:
-      - containerPort: 30080
-        hostPort: 80
-        listenAddress: 127.0.0.1
-      - containerPort: 30081
-        hostPort: 8080
-        listenAddress: 127.0.0.1
-  - role: worker
+- role: control-plane
+  kubeadmConfigPatches:
+  - "kind: InitConfiguration\nnodeRegistration:\n  taints: []\n"
+  extraPortMappings:
+  - containerPort: 30080
+    hostPort: 80
+    listenAddress: 127.0.0.1
+  - containerPort: 30081
+    hostPort: 8080
+    listenAddress: 127.0.0.1
+  - containerPort: 30500
+    hostPort: 15000
+    listenAddress: 127.0.0.1
+  - containerPort: 30556
+    hostPort: 15556
+    listenAddress: 127.0.0.1
+  - containerPort: 30900
+    hostPort: 19000
+    listenAddress: 127.0.0.1
+- role: worker

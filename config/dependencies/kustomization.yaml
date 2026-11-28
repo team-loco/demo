@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: loco-demo
+resources:
+- workloads.yaml
+configMapGenerator:
+- name: dex
+  files:
+  - config.yaml=dex.yaml
+secretGenerator:
+- name: s3
+  literals:
+  - access-key-id=loco-demo
+  - secret-access-key=loco-demo-storage
+generatorOptions:
+  disableNameSuffixHash: true
