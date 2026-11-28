@@ -583,6 +583,8 @@ def publish_gitops(bundle, entry):
     # The parent waits for the bundle's child Kustomizations to become ready.
     flux("reconcile", "kustomization", "loco", "--with-source", "--timeout=10m", timeout=READY_SECONDS + 60,
          log=OUT / "flux-loco.log", stream=True)
+    if entry == "./all":
+        kube("apply", "-f", CONFIG / "build-egress.yaml")
 
 
 def initialize_gitops(bundle):

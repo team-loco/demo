@@ -69,7 +69,7 @@ jobs:
       - name: Verify teardown
         if: always()
         run: |
-          mise run down
+          mise run down 2>&1 | tee artifacts/teardown.log
           kind get clusters > artifacts/remaining-clusters.log
           test ! -s artifacts/remaining-clusters.log
           docker ps --format '{{.Names}}' > artifacts/remaining-containers.log
