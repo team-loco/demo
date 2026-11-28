@@ -6,11 +6,6 @@ containerdConfigPatches:
       config_path = "/etc/containerd/certs.d"
 nodes:
   - role: control-plane
-    kubeadmConfigPatches:
-      - |
-        kind: InitConfiguration
-        nodeRegistration:
-          taints: []
     extraPortMappings:
       - containerPort: 30080
         hostPort: 80
@@ -18,4 +13,3 @@ nodes:
       - containerPort: 30081
         hostPort: 8080
         listenAddress: 127.0.0.1
-  - role: worker
