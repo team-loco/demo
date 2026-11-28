@@ -51,7 +51,7 @@ DOMAIN = "loco-demo.localhost"
 LOCO_REPOSITORY = "team-loco/loco"
 # The registry addresses for host pushes and in-cluster pulls.
 REGISTRY_PUSH = "localhost:15000"
-REGISTRY_ADDRESS = "artifacts." + DOMAIN + ":5000"
+REGISTRY_ADDRESS = "artifacts.loco-demo.svc.cluster.local:5000"
 FIXTURES = ["s3", "dex"]
 DEMO_EMAIL = "demo@example.test"
 DEMO_PASSWORD = "demo-password"
@@ -353,8 +353,11 @@ def platform_bundle():
         digest = run(["crane", "digest", f"{repository}:{source['version']}"]).strip()
         return repository + "@" + digest
     checkout = core_checkout()
-    with step("Build the core checkout's platform into the registry fixture"):
-        route_registry_to_nodes(fixture_addresses()["artifacts"])
+    with step("Build the core checkout's platform into the development registry"):
+        kube("apply", "-k", CONFIG / "platform-artifacts")
+        kube("-n", "loco-demo", "rollout", "status", "deployment/artifacts", "--timeout=120s")
+        address = kube("-n", "loco-demo", "get", "service", "artifacts", "-o", "jsonpath={.spec.clusterIP}").strip()
+        route_registry_to_nodes(address)
         # Parallel builds share stderr. Use plain progress to keep them from redrawing the terminal.
         with tempfile.TemporaryFile(mode="w+t") as manifest_file:
             run(["mise", "run", "--quiet", "release:local", "--", "--repository", LOCO_REPOSITORY,
@@ -405,11 +408,8 @@ def assert_infrastructure_only(docs):
 
 
 def fixture_addresses():
-    names = [*FIXTURES]
-    if loco_source()["source"] != "release":
-        names.append("artifacts")
     return {name: kube("-n", "loco-demo", "get", "service", name,
-                       "-o", "jsonpath={.spec.clusterIP}").strip() for name in names}
+                       "-o", "jsonpath={.spec.clusterIP}").strip() for name in FIXTURES}
 
 
 def cluster_hosts(addresses, gateway):
@@ -447,9 +447,6 @@ fi"""])
         kube("apply", "-k", CONFIG / "dependencies")
         for name in FIXTURES:
             kube("-n", "loco-demo", "rollout", "status", "deployment/" + name, "--timeout=120s")
-        if loco_source()["source"] != "release":
-            kube("apply", "-k", CONFIG / "platform-artifacts")
-            kube("-n", "loco-demo", "rollout", "status", "deployment/artifacts", "--timeout=120s")
         discovery = AUTH["issuer"] + "/.well-known/openid-configuration"
         wait_for("Dex discovery", lambda: urllib.request.urlopen(discovery, timeout=5).status == 200, 30)
     addresses = fixture_addresses()
