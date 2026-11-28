@@ -43,9 +43,12 @@ jobs:
       - run: mise run e2e -- --keep
       - name: Verify S3 survives pod replacement
         run: |
+          kubectl --kubeconfig .state/kubeconfig -n flux-system get bucket demo-config -o jsonpath='{.status.artifact.revision}' > artifacts/gitops-revision-before.txt
           kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout restart deployment/s3
           kubectl --kubeconfig .state/kubeconfig -n loco-demo rollout status deployment/s3 --timeout=120s
           flux --kubeconfig .state/kubeconfig reconcile source bucket demo-config
+          kubectl --kubeconfig .state/kubeconfig -n flux-system get bucket demo-config -o jsonpath='{.status.artifact.revision}' > artifacts/gitops-revision-after.txt
+          cmp artifacts/gitops-revision-before.txt artifacts/gitops-revision-after.txt
       - name: Verify local reload preserves the workspace
         if: matrix.loco == 'main'
         run: |
