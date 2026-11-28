@@ -41,6 +41,8 @@ CONTROL_PLANE = yaml.safe_load((VALUES / "loco-control-plane.yaml").read_text())
 WORKER = yaml.safe_load((VALUES / "loco-worker.yaml").read_text())
 API_URL = WORKER["env"]["CONTROL_PLANE_URL"]
 WEB_URL = CONTROL_PLANE["api"]["env"]["WEB_URL"]
+APP_REGISTRY_HOST = CONTROL_PLANE["registry"]["hostname"]
+APP_REGISTRY_URL = "http://" + APP_REGISTRY_HOST
 SHOP_URL = f"http://{SERVICES['frontend-proxy']['domains'][0]}:8080"
 AUTH = json.loads(CONTROL_PLANE["api"]["env"]["AUTH_ISSUERS"])[0]
 REGION = WORKER["global"]["region"]
@@ -419,7 +421,7 @@ def cluster_hosts(addresses, gateway):
         hosts[addresses["s3"]].append(f"{bucket}.{storage}")
     hosts[gateway] = [urllib.parse.urlsplit(url).hostname for url in
                       [API_URL, WEB_URL, WORKER["global"]["exporter"]["endpoint"],
-                       CONTROL_PLANE["api"]["env"]["LOCO_REGISTRY_URL"]]]
+                       APP_REGISTRY_URL]]
     return hosts
 
 
@@ -1175,7 +1177,7 @@ def check_dependencies():
          log=OUT / "control-plane-dependencies.log")
     kube("-n", "loco-demo", "get", "deployments,pvc,pods", "-o", "wide",
          log=OUT / "demo-dependencies.log")
-    request = urllib.request.Request(CONTROL_PLANE["api"]["env"]["LOCO_REGISTRY_URL"] + "/v2/")
+    request = urllib.request.Request(APP_REGISTRY_URL + "/v2/")
     try:
         urllib.request.urlopen(request, timeout=10).close()
     except urllib.error.HTTPError as exc:
@@ -1187,7 +1189,7 @@ def check_dependencies():
     catalog = json.loads(kube("-n", app_namespace(), "get", "pods", "-l",
                               "loco.io/resource-id=" + resources()["product-catalog"], "-o", "json"))
     images = [container["image"] for pod in catalog["items"] for container in pod["spec"]["containers"]]
-    registry = CONTROL_PLANE["api"]["env"]["LOCO_REGISTRY_HOST"] + "/"
+    registry = APP_REGISTRY_HOST + "/"
     if not any(image.startswith(registry) for image in images):
         raise RuntimeError("Product catalog did not deploy an image built into the application registry")
     (OUT / "registry-build.json").write_text(json.dumps({"challenge": challenge, "images": images}, indent=2) + "\n")

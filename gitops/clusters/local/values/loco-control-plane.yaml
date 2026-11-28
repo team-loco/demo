@@ -15,8 +15,6 @@ api:
     LOCO_SOURCE_BUCKET_ENDPOINT: http://s3.loco-demo.localhost:19000
     LOCO_SOURCE_BUCKET: loco-sources
     LOCO_SOURCE_BUCKET_REGION: us-east-1
-    LOCO_REGISTRY_HOST: registry.loco-demo.localhost
-    LOCO_REGISTRY_URL: http://registry.loco-demo.localhost
 certManager:
   enabled: false
   issuer:
